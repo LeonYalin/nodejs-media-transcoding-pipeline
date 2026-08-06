@@ -4,9 +4,19 @@
       "type": "stdio",
       "command": "docker",
       "args": [
-        "run", "--rm", "-i", "--add-host=host.docker.internal:host-gateway",
-        "-e", "GRAFANA_URL", "-e", "GRAFANA_USERNAME", "-e", "GRAFANA_PASSWORD",
-        "grafana/mcp-grafana", "-t", "stdio"
+        "run",
+        "--rm",
+        "-i",
+        "--add-host=host.docker.internal:host-gateway",
+        "-e",
+        "GRAFANA_URL",
+        "-e",
+        "GRAFANA_USERNAME",
+        "-e",
+        "GRAFANA_PASSWORD",
+        "grafana/mcp-grafana",
+        "-t",
+        "stdio"
       ],
       "env": {
         "GRAFANA_URL": "http://host.docker.internal:3001",
@@ -18,8 +28,18 @@
       "type": "stdio",
       "command": "docker",
       "args": [
-        "run", "--rm", "-i", "--network=media_pipeline_net",
-        "-e", "REDIS_HOST", "-e", "REDIS_PORT", "-e", "REDIS_DB", "-e", "REDIS_SSL",
+        "run",
+        "--rm",
+        "-i",
+        "--network=media_pipeline_net",
+        "-e",
+        "REDIS_HOST",
+        "-e",
+        "REDIS_PORT",
+        "-e",
+        "REDIS_DB",
+        "-e",
+        "REDIS_SSL",
         "mcp/redis"
       ],
       "env": {

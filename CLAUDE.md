@@ -35,7 +35,7 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 ## How to run / inspect
 - Operational commands (build the worker image, infra up/down, scaling workers, dev API, load test, one-off ffprobe, every UI/port) → **`run-pipeline` skill**.
 - Queue/storage/job diagnostics → **`queue-ops` skill**.
-- End-to-end verification → **`transcode-verifier` agent**. Ladder/HLS/encoder design → **`ffmpeg-expert` agent**. Reviewing new TS against the messaging invariants → **`queue-reliability-reviewer` agent**.
+- End-to-end verification → **`transcode-verifier` agent**. Ladder/HLS/encoder design → **`ffmpeg-expert` agent**. Reviewing new TS against the messaging invariants → **`queue-reliability-reviewer` agent**. Structure/tooling/house-style audit after each build step → **`project-standards-reviewer` agent**.
 - Interactive Grafana/Redis access → MCP servers in `.mcp.json` (Docker-based, project-scoped). Tool schemas load on demand via Claude Code's tool search, so they add negligible context per turn. RabbitMQ and MinIO have no published MCP server — use the `queue-ops` skill.
 
 Don't restate commands here — those skills are the single source.

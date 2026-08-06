@@ -201,8 +201,9 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 
 ## Implementation Steps
 
-### 1. Scaffolding & config
+### 1. Scaffolding & config — DONE
 - `package.json` (ESM, `type: module`), `tsconfig.json` (strict, `moduleResolution: NodeNext`).
+- **Note:** TypeScript is pinned to `^5` — `typescript-eslint@8` declares `typescript >=4.8.4 <6.1.0`, so TS 7 would break linting. (The ETL repo could run TS 7 only because it deferred ESLint.)
 - Install deps: `fastify @fastify/multipart @fastify/static amqplib @aws-sdk/client-s3 @aws-sdk/lib-storage sharp fluent-ffmpeg ioredis zod pino prom-client @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-{http,fastify,amqplib,ioredis,aws-sdk}`; dev: `tsx typescript @types/node @types/fluent-ffmpeg pino-pretty vitest testcontainers @testcontainers/rabbitmq autocannon eslint prettier concurrently`.
 - npm scripts pass `--env-file=.env` to `tsx` (no `dotenv`). `eslint.config.js` (flat config) + `.prettierrc.json`. `Makefile` mirrors the npm scripts.
 
@@ -305,6 +306,7 @@ Two subtleties to encode in comments, because they are the actual lesson:
 - **`.claude/agents/transcode-verifier.md`** — e2e verification subagent; orchestration only, invokes the two skills, zero duplicated commands.
 - **`.claude/agents/queue-reliability-reviewer.md`** — reviews new/changed TS against this app's messaging invariants (ack placement, confirms, prefetch, streaming vs. buffering, temp-dir cleanup, shutdown, retry-vs-park, module boundaries). Does not restate general TS/Fastify style.
 - **`.claude/agents/ffmpeg-expert.md`** — ladder/HLS/encoder-flag design and transcode performance; defers detail to `src/media/*` and the skills.
+- **`.claude/agents/project-standards-reviewer.md`** — audits structure, module boundaries, house style and tooling hygiene against this spec after every build step. Complements (does not overlap) the reliability reviewer.
 - **`.mcp.json`** — Grafana + Redis MCP servers (Docker-based, project-scoped). There is **no** published RabbitMQ or MinIO/S3 MCP server, so those are covered by the `queue-ops` skill via their CLIs and HTTP APIs rather than a guessed image. Tool schemas load on demand via Claude Code's tool search, so they add negligible per-turn cost.
 
 This structure is the token-saving lesson: `CLAUDE.md` loads every turn so it stays small; heavier procedural detail lives in skills that load **on demand**; agents run in isolated context and pull only the skill(s) they need.
