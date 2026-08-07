@@ -13,4 +13,12 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
   },
+  {
+    // Tests own their setup, so a `!` on a fixture the test itself just assigned
+    // is safe. In src/ it stays an error: those values come from I/O.
+    files: ["**/*.test.ts", "tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-non-null-assertion": "off",
+    },
+  },
 );

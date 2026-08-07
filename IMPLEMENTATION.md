@@ -110,7 +110,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 ├── .github/workflows/ci.yml            # lint + typecheck + unit + worker image build
 ├── rabbitmq/enabled_plugins            # rabbitmq_management, rabbitmq_prometheus
 ├── prometheus/prometheus.yml           # api (host.docker.internal), worker (dns_sd), rabbitmq
-├── grafana/provisioning/…              # datasource + dashboards/pipeline.json
+├── grafana/provisioning/…              # datasource + dashboards/{pipeline,runtime}.json
 ├── public/index.html                   # upload form + job table + SSE progress + hls.js player
 ├── scripts/
 │   ├── infra-init.ts                   # assert MinIO buckets + AMQP topology; verify reachability
@@ -207,10 +207,11 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - Install deps: `fastify @fastify/multipart @fastify/static amqplib @aws-sdk/client-s3 @aws-sdk/lib-storage sharp fluent-ffmpeg ioredis zod pino prom-client @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-{http,fastify,amqplib,ioredis,aws-sdk}`; dev: `tsx typescript @types/node @types/fluent-ffmpeg pino-pretty vitest testcontainers @testcontainers/rabbitmq autocannon eslint prettier concurrently`.
 - npm scripts pass `--env-file=.env` to `tsx` (no `dotenv`). `eslint.config.js` (flat config) + `.prettierrc.json`. `Makefile` mirrors the npm scripts.
 
-### 2. Config (`src/config/index.ts`)
+### 2. Config (`src/config/index.ts`) — DONE
 - Read `process.env`, validate with zod, export typed `config` + a pure `loadConfig(env)` that **throws** rather than exiting (so tests can assert on it).
 - Keys: `AMQP_URL`, `AMQP_PREFETCH`, `RETRY_TTL_MS`, `MAX_ATTEMPTS`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `BUCKET_UPLOADS`, `BUCKET_OUTPUTS`, `REDIS_URL`, `API_PORT`, `MAX_UPLOAD_BYTES`, `WORKER_METRICS_PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `JOB_TTL_SECONDS`, `HLS_SEGMENT_SECONDS`, `NODE_ENV`. Mirror every key in `.env.example`.
-- `src/lib/logger.ts` (pino, silent under `NODE_ENV=test`), `src/lib/metrics.ts` (own Registry + `collectDefaultMetrics`), `src/lib/metrics-server.ts`.
+- `src/lib/logger.ts` (pino, silent under `NODE_ENV=test`), `src/lib/metrics.ts` (own Registry + `collectDefaultMetrics`), `src/lib/metrics-server.ts` (workers only — the API serves `/metrics` through Fastify).
+- Queue depth is **not** a `media_*` metric: RabbitMQ's `rabbitmq_prometheus` plugin already publishes it per queue, and a second source would drift.
 
 ### 3. Domain + media core (pure first)
 - `domain/job.ts`: `JobMessageSchema` (the wire contract shared by API and worker), `JobRecordSchema`, `JobStatus` = `queued|processing|completed|failed`.
@@ -223,7 +224,7 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - **RabbitMQ** `4.3-management-alpine`, `rabbitmq/enabled_plugins` mounted to enable `rabbitmq_management` + `rabbitmq_prometheus`; ports 5672 (AMQP), 15672 (UI), 15692 (metrics); healthcheck `rabbitmq-diagnostics -q ping`.
 - **MinIO** on the pinned console-bearing release; ports 9000 (S3) / 9001 (console); a short-lived `mc` bootstrap service creates `media-uploads` + `media-outputs`; healthcheck on `/minio/health/live`.
 - **Redis** `7-alpine` with `--appendonly yes`; healthcheck `redis-cli ping`. **RedisInsight** `3.8` alongside it on port 5540 for browsing job hashes and watching pub/sub.
-- **Prometheus** (mounted config), **Grafana** (provisioned datasource + dashboard, host port 3001 → 3000 because the API owns 3000), **Jaeger all-in-one** (OTLP/HTTP 4318, UI 16686).
+- **Prometheus** (mounted config), **Grafana** (provisioned datasource + both dashboards, host port 3001 → 3000 because the API owns 3000), **Jaeger all-in-one** (OTLP/HTTP 4318, UI 16686).
 - **worker**: built from `Dockerfile.worker`, `depends_on` healthy rabbitmq/minio/redis, `stop_grace_period: 60s`, no fixed `container_name` (it must be scalable), service-name env overrides, narrow bind-mounts per the execution model.
 - Named network `media_pipeline_net` so MCP containers can join by name.
 
@@ -276,7 +277,13 @@ Two subtleties to encode in comments, because they are the actual lesson:
 ### 10. Observability
 - `prom-client`: `media_jobs_total{type,status}`, `media_transcode_duration_seconds{type,rendition}`, `media_upload_bytes`, `media_retries_total`, `media_parked_total{reason}`, `media_worker_busy`, plus default metrics (incl. event-loop lag).
 - `prometheus.yml` scrapes: the host API via `host.docker.internal`, RabbitMQ's own `:15692/metrics`, and worker replicas via `dns_sd_configs: [{ names: [worker], type: A, port: <WORKER_METRICS_PORT> }]`.
-- Grafana `pipeline.json`: queue depth per queue, jobs/min by status, transcode duration p50/p95 by rendition, retry + parked rate, worker busy ratio, upload throughput.
+- **Two Grafana dashboards, not one** — split by the question each answers, which is the standard overview→drill-down pattern:
+  - **`pipeline.json` — "is the pipeline keeping up?"** Queue depth per queue, jobs/min by status, transcode duration p50/p95 by rendition, retry + parked rate, worker busy ratio, upload throughput and `202` latency.
+  - **`runtime.json` — "why is it slow, and is any process unhealthy?"** Per-instance event-loop lag (p99), heap vs. RSS, GC pause time, CPU, active handles/requests, process uptime/restarts — all from `collectDefaultMetrics`.
+- The overview additionally carries a **compact "runtime health" row** with exactly two default metrics: **event-loop lag p99** and **RSS**. This is deliberate, not duplication — those two are the direct evidence for the project's two central claims ("we never block the event loop", "we never buffer a media file"). Everything else stays on the runtime dashboard.
+- Wire them together: a shared `instance` template variable plus Grafana **dashboard links / data links** on the runtime row, so clicking a lag spike lands on that instance's panels. Both dashboards are auto-provisioned from `grafana/provisioning/dashboards/`.
+- **Aggregation rule for scaled workers:** default metrics are per-instance, so `sum()` across replicas hides a single sick one. Use `max by (instance)` / per-instance series for lag, heap and RSS; reserve `sum()` for genuinely additive work counters. The `job` label separates the host API from the worker replicas.
+- Use `nodejs_eventloop_lag_p99_seconds` rather than the mean `nodejs_eventloop_lag_seconds` — a blocked loop shows up in the tail long before the average moves.
 - `lib/tracing.ts`: `NodeSDK` with the http/fastify/amqplib/ioredis/aws-sdk instrumentations and an OTLP/HTTP exporter → Jaeger. **Imported first** in both entrypoints (before any instrumented library). Acceptance check: one Jaeger trace contains the API span *and* the worker's ffmpeg span — proving the amqplib instrumentation propagated context through the message headers.
 
 ### 11. Reliability
@@ -330,7 +337,7 @@ This structure is the token-saving lesson: `CLAUDE.md` loads every turn so it st
 4. Upload a 1080p video → the plan job fans out three rendition jobs; the UI shows three progress bars advancing in parallel across replicas; `master.m3u8` appears when the last one finishes and plays in the browser.
 5. Upload a source smaller than 720p → the ladder contains no upscaled rungs.
 6. Upload a deliberately corrupt file → it retries the configured number of times (visible as `q.retry` depth oscillating), then lands in `q.parked` with the reason in its headers and the job marked `failed`.
-7. Run the load script with several worker replicas → `202` p99 stays low while queue depth grows, then drains as workers catch up. Grafana shows queue depth, transcode duration and worker-busy tracking it.
+7. Run the load script with several worker replicas → `202` p99 stays low while queue depth grows, then drains as workers catch up. The **pipeline** dashboard shows queue depth, transcode duration and worker-busy tracking it; the **runtime** dashboard shows event-loop lag staying flat under load (proving the native work never blocks the loop) and RSS staying flat regardless of upload size (proving nothing is buffered).
 8. Jaeger: one trace spans the API upload span through the AMQP publish into the worker's transcode span.
 9. **Reliability check:** kill a worker mid-transcode → the message is redelivered to another replica and the job still completes. Then stop workers entirely, upload jobs, restart → the durable queue still holds them and they process.
 

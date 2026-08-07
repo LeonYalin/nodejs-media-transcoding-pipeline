@@ -30,7 +30,7 @@ Each should return only the file that legitimately owns it:
 - Modules export `createX(deps)` factories with structurally-typed dependency objects. No classes for services, no DI container.
 - Entrypoints (`src/api/index.ts`, `src/worker/index.ts`, `scripts/*`) are the **only** files that construct real clients and the only ones with import-time side effects, guarded by `import.meta.url === pathToFileURL(process.argv[1]).href`.
 - Comments explain **why**, not what — and are used on the non-obvious decisions (a surprising flag, a workaround, an ordering constraint). Flag both undocumented subtleties and comments that merely narrate the next line.
-- No `any`. No non-null `!` on values that come from I/O.
+- No `any`. No non-null `!` in `src/` — those values come from I/O. Test files are exempt (enforced by an `eslint.config.js` override, not inline disables): a test asserting on a fixture it just assigned is safe.
 
 ## 4. Config & tooling hygiene
 - Every key in `src/config/index.ts` exists in `.env.example` **and vice versa** — check both directions, they drift silently.
