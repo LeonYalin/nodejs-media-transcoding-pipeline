@@ -213,11 +213,11 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - `src/lib/logger.ts` (pino, silent under `NODE_ENV=test`), `src/lib/metrics.ts` (own Registry + `collectDefaultMetrics`), `src/lib/metrics-server.ts` (workers only — the API serves `/metrics` through Fastify).
 - Queue depth is **not** a `media_*` metric: RabbitMQ's `rabbitmq_prometheus` plugin already publishes it per queue, and a second source would drift.
 
-### 3. Domain + media core (pure first)
+### 3. Domain + media core (pure first) — DONE
 - `domain/job.ts`: `JobMessageSchema` (the wire contract shared by API and worker), `JobRecordSchema`, `JobStatus` = `queued|processing|completed|failed`.
 - `domain/media.ts`: MIME allowlist (`image/{jpeg,png,webp,avif}`, `video/{mp4,quicktime,webm,x-matroska}`), `Rendition`, `ProbeResult`, and the **error classes that drive retry-vs-park**: `UnsupportedMediaError`, `CorruptMediaError`, `ObjectNotFoundError` (all `retryable = false`); everything else defaults to retryable.
-- `media/ladder.ts` — pure `buildLadder(sourceHeight)`: from `[1080p 5000k, 720p 2800k, 360p 800k]`, keep renditions whose height ≤ source height, **never upscale**; if the source is smaller than the smallest rung, emit a single source-height rendition.
-- `media/hls.ts` — pure `buildMasterPlaylist(renditions)` → `#EXT-X-STREAM-INF:BANDWIDTH=…,RESOLUTION=…,CODECS="avc1.4d401f,mp4a.40.2"` + relative variant paths.
+- `media/ladder.ts` — pure `buildLadder(probe)`: from `[1080p 5000k, 720p 2800k, 360p 800k]`, keep renditions whose height ≤ source height, **never upscale**; if the source is smaller than the smallest rung, emit a single source-height rendition. Takes the whole `ProbeResult` (not just height) so each rung's **width follows the source aspect ratio** — portrait and 4:3 sources must not be advertised as 16:9. Both dimensions are forced **even** (H.264 yuv420p requirement, matching ffmpeg's `scale=-2:h`). **Throws `CorruptMediaError` on unusable dimensions** rather than returning `[]`: an empty ladder would set `renditionsExpected = 0` and hang the fan-out barrier forever.
+- `media/hls.ts` — pure `buildMasterPlaylist(renditions)` → `#EXT-X-STREAM-INF:BANDWIDTH=…,RESOLUTION=…,CODECS="…"` + relative variant paths taken from `rendition.name`, so they can't drift from the directory the worker writes. The AVC codec string is **per rung, not fixed**: L3.0 `avc1.4d401e` ≤480p, L3.1 `avc1.4d401f` ≤720p, L4.0 `avc1.4d4028` above — a single hardcoded L3.1 under-declares 1080p and strict players reject it.
 - Write these two with their unit tests **before** any infra exists — they need none.
 
 ### 4. Infra (`docker-compose.yml`)

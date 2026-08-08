@@ -10,7 +10,12 @@ export default tseslint.config(
   {
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      // ignoreRestSiblings allows the destructure-to-omit idiom:
+      //   const { secret: _omitted, ...rest } = value;
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true },
+      ],
     },
   },
   {
