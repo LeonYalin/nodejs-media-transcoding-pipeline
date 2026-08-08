@@ -1,10 +1,7 @@
-.PHONY: up up-workers down build-worker logs-worker infra-init dev-api load test test-watch test-integration typecheck lint format
+.PHONY: up down build-worker logs-worker infra-init dev-api load test test-watch test-integration typecheck lint format
 
 up:
 	npm run up
-
-up-workers:
-	npm run up:workers
 
 down:
 	npm run down

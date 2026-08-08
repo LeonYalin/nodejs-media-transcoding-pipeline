@@ -9,9 +9,9 @@ Prereqs: **Docker running + Node 20+ — nothing else.** `npm install` done · `
 ffmpeg is *not* installed on the host; it lives in the worker image.
 
 ## Infra + workers (docker compose)
-- Build the worker image: `npm run build:worker`
-- Up (infra only): `npm run up`
-- Up with N transcode workers: `WORKERS=4 npm run up:workers`   # 12-core box: 4 is a good default, ~10 max
+- Up (everything, 4 workers by default): `npm run up`
+- Change the worker count: `WORKERS=8 npm run up`   # 12-core box: 4 is a good default, ~10 max
+- Rebuild the worker image after a Dockerfile/dependency change: `npm run build:worker`
 - Status / health: `docker compose ps`
 - Logs: `docker compose logs -f <service>` · workers only: `npm run logs:worker`
 - Down (keep data): `npm run down` — Down + wipe volumes: `docker compose down -v`
@@ -30,7 +30,7 @@ ffmpeg is *not* installed on the host; it lives in the worker image.
 
 ## Load test
 `npm run load`   # autocannon, concurrent multipart uploads; reports p99 + 202 rate
-Tune: `WORKERS=8 npm run up:workers` first, then re-run and watch queue depth drain in Grafana.
+Tune: `WORKERS=8 npm run up` first, then re-run and watch queue depth drain in Grafana.
 
 ## One-off ffmpeg / ffprobe (host stays clean)
 `docker compose run --rm --entrypoint ffprobe worker -v error -show_streams /path/inside/container`
@@ -38,7 +38,7 @@ Mount a host file to inspect it: add `-v "$PWD/fixtures:/fixtures"` and point at
 
 ## Endpoints (defaults)
 - API + dashboard: `http://localhost:3000` — `POST /uploads`, `GET /jobs`, `/jobs/:id`, `/jobs/:id/events`, `/healthz`, `/metrics`
-- RabbitMQ management: `http://localhost:15672` (guest/guest) · broker metrics `:15692/metrics`
+- RabbitMQ management: `http://localhost:15672` (media/media) · broker metrics `:15692/metrics`
 - MinIO console: `http://localhost:9001` · S3 endpoint `http://localhost:9000`
 - RedisInsight: `http://localhost:5540`
 - Prometheus: `http://localhost:9090` · Grafana: `http://localhost:3001` (admin/admin) · Jaeger: `http://localhost:16686`

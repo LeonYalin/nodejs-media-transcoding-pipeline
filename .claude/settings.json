@@ -11,7 +11,7 @@
       "Bash(npx tsx:*)",
       "Bash(npx vitest:*)",
       "Bash(curl http://localhost:*)",
-      "Bash(curl -su guest:guest http://localhost:15672/*)"
+      "Bash(curl -su media:media http://localhost:15672/*)"
     ]
   },
   "enabledMcpjsonServers": ["grafana", "redis"]

@@ -5,8 +5,7 @@
   "description": "Distributed media transcoding pipeline using RabbitMQ, MinIO and ffmpeg",
   "author": "Leon Yalin",
   "scripts": {
-    "up": "docker compose up -d",
-    "up:workers": "docker compose up -d --scale worker=${WORKERS:-4}",
+    "up": "docker compose up -d --scale worker=${WORKERS:-4}",
     "down": "docker compose down",
     "build:worker": "docker compose build worker",
     "logs:worker": "docker compose logs -f worker",

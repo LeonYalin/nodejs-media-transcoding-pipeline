@@ -15,14 +15,14 @@ Prefix: `docker compose exec rabbitmq rabbitmqctl`
 
 Management HTTP API (same data as JSON, better for scripting):
 ```
-curl -su guest:guest http://localhost:15672/api/queues/%2F | \
+curl -su media:media http://localhost:15672/api/queues/%2F | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.table(JSON.parse(d).map(q=>({name:q.name,ready:q.messages_ready,unacked:q.messages_unacknowledged}))))"
 ```
 
 ### Inspect a parked message (why did it fail?)
 Peek without consuming by rejecting back onto the queue:
 ```
-curl -su guest:guest -H 'content-type: application/json' \
+curl -su media:media -H 'content-type: application/json' \
   -d '{"count":5,"ackmode":"reject_requeue_true","encoding":"auto"}' \
   http://localhost:15672/api/queues/%2F/q.parked/get
 ```

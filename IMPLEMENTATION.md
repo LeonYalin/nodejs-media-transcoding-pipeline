@@ -220,12 +220,14 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - `media/hls.ts` — pure `buildMasterPlaylist(renditions)` → `#EXT-X-STREAM-INF:BANDWIDTH=…,RESOLUTION=…,CODECS="…"` + relative variant paths taken from `rendition.name`, so they can't drift from the directory the worker writes. The AVC codec string is **per rung, not fixed**: L3.0 `avc1.4d401e` ≤480p, L3.1 `avc1.4d401f` ≤720p, L4.0 `avc1.4d4028` above — a single hardcoded L3.1 under-declares 1080p and strict players reject it.
 - Write these two with their unit tests **before** any infra exists — they need none.
 
-### 4. Infra (`docker-compose.yml`)
-- **RabbitMQ** `4.3-management-alpine`, `rabbitmq/enabled_plugins` mounted to enable `rabbitmq_management` + `rabbitmq_prometheus`; ports 5672 (AMQP), 15672 (UI), 15692 (metrics); healthcheck `rabbitmq-diagnostics -q ping`.
-- **MinIO** on the pinned console-bearing release; ports 9000 (S3) / 9001 (console); a short-lived `mc` bootstrap service creates `media-uploads` + `media-outputs`; healthcheck on `/minio/health/live`.
+### 4. Infra (`docker-compose.yml`) — DONE
+- **RabbitMQ** `4.3-management-alpine`, `rabbitmq/enabled_plugins` mounted to enable `rabbitmq_management` + `rabbitmq_prometheus`; ports 5672 (AMQP), 15672 (UI), 15692 (metrics); healthcheck `rabbitmq-diagnostics -q ping`; **named volume** so `docker compose down` doesn't discard durable queues.
+- **Credentials: a real `media` user via `RABBITMQ_DEFAULT_USER/PASS`, not `guest`.** The built-in `guest` account is restricted to loopback, so worker containers cannot authenticate with it — verified: `guest` returns **401** from another container while `media` returns 200.
+- **MinIO** on the pinned console-bearing release; ports 9000 (S3) / 9001 (console); a short-lived `mc` bootstrap service creates `media-uploads` + `media-outputs` with `&&` chaining so a failure surfaces instead of exiting 0. Healthcheck is **`mc ready local`**, not `curl` — the MinIO image ships no curl.
 - **Redis** `7-alpine` with `--appendonly yes`; healthcheck `redis-cli ping`. **RedisInsight** `3.8` alongside it on port 5540 for browsing job hashes and watching pub/sub.
 - **Prometheus** (mounted config), **Grafana** (provisioned datasource + both dashboards, host port 3001 → 3000 because the API owns 3000), **Jaeger all-in-one** (OTLP/HTTP 4318, UI 16686).
-- **worker**: built from `Dockerfile.worker`, `depends_on` healthy rabbitmq/minio/redis, `stop_grace_period: 60s`, no fixed `container_name` (it must be scalable), service-name env overrides, narrow bind-mounts per the execution model.
+- **worker**: built from `Dockerfile.worker`, `depends_on` healthy rabbitmq/minio/redis, `stop_grace_period: 60s`, no fixed `container_name` (it must be scalable), service-name env overrides, narrow bind-mounts per the execution model. Scaled inline by `npm run up` (`--scale worker=${WORKERS:-4}`) — **one compose file, one `up` command**, deliberately chosen over Compose profiles or a second override file: this is a learning project that won't grow, so fewer commands to remember beats an infra-only mode nobody would use.
+- **Env-key discipline:** the worker's `environment:` keys must match `src/config` exactly. Every key has a default, so a typo does **not** fail loudly — it silently falls back to a `localhost` URL that resolves to the container itself.
 - Named network `media_pipeline_net` so MCP containers can join by name.
 
 ### 5. Worker image (`Dockerfile.worker`)
@@ -292,7 +294,7 @@ Two subtleties to encode in comments, because they are the actual lesson:
 - **Idempotency:** output keys derive from `jobId` + rendition, so redelivery overwrites rather than duplicating; the barrier uses absolute state where it can and `HINCRBY` only once per rendition completion.
 
 ### 12. Developer ergonomics + UI
-- npm scripts: `up`, `up:workers` (`--scale worker=N`), `down`, `build:worker`, `infra:init`, `dev:api`, `logs:worker`, `load`, `lint`, `format`, `typecheck`, `test`, `test:watch`, `test:integration`. `Makefile` mirrors them.
+- npm scripts: `up` (`--scale worker=${WORKERS:-4}`), `down`, `build:worker`, `logs:worker`, `infra:init`, `dev:api`, `load`, `lint`, `format`, `typecheck`, `test`, `test:watch`, `test:integration`. `Makefile` mirrors them.
 - `scripts/infra-init.ts`: assert MinIO buckets + the full AMQP topology, then verify reachability of RabbitMQ, MinIO and Redis — the one command to run after `up`.
 - `scripts/load.ts`: `autocannon` firing concurrent multipart uploads of a fixture, reporting p99 latency and the `202` rate — the proof that ingest stays fast while workers churn.
 - `public/index.html`: vanilla JS — upload form, job table polled from `GET /jobs`, per-job progress bars driven by SSE, and an `hls.js` player pointed at the finished `master.m3u8`. No framework, no build step.

@@ -116,19 +116,18 @@ upload slow?" is unanswerable from logs alone.
 ### Quickstart
 
 ```bash
-cp .env.example .env         # defaults work out of the box
+cp .env.example .env   # defaults work out of the box
 npm install
-npm run build:worker         # bakes ffmpeg into the worker image
-WORKERS=4 npm run up:workers # infra + 4 transcode workers
-npm run infra:init           # creates buckets + AMQP topology, verifies connectivity
+npm run up             # infra + 4 transcode workers (WORKERS=8 npm run up to change)
+npm run infra:init     # creates buckets + AMQP topology, verifies connectivity
 
-npm run dev:api              # the API on the host
+npm run dev:api        # the API on the host
 ```
 
 Then open:
 
 *   **API + dashboard:** http://localhost:3000 — drop in an image or a video and watch it transcode
-*   **RabbitMQ:** http://localhost:15672 → guest/guest
+*   **RabbitMQ:** http://localhost:15672 → media/media
 *   **MinIO console:** http://localhost:9001 · **RedisInsight:** http://localhost:5540
 *   **Grafana:** http://localhost:3001 → admin/admin · **Prometheus:** http://localhost:9090
 *   **Jaeger:** http://localhost:16686
