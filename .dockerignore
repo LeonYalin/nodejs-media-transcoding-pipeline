@@ -1,0 +1,23 @@
+# Never ship host state into the image
+node_modules
+.git
+.env
+tmp
+dist
+coverage
+
+# Not needed by the worker
+tests
+public
+docs
+grafana
+prometheus
+rabbitmq
+.claude
+*.md
+Makefile
+docker-compose.yml
+Dockerfile.worker
+
+# Unit tests live beside their source; the worker image doesn't run them
+src/**/*.test.ts

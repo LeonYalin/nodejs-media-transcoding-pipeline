@@ -230,10 +230,13 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - **Env-key discipline:** the worker's `environment:` keys must match `src/config` exactly. Every key has a default, so a typo does **not** fail loudly — it silently falls back to a `localhost` URL that resolves to the container itself.
 - Named network `media_pipeline_net` so MCP containers can join by name.
 
-### 5. Worker image (`Dockerfile.worker`)
-- `FROM node:24-bookworm-slim`; `COPY --from=mwader/static-ffmpeg:8.1.2 /ffmpeg /ffprobe /usr/local/bin/`; `npm ci`; run as a non-root user; entry `npx tsx watch src/worker/index.ts`.
-- `.dockerignore`: `node_modules`, `.git`, `tmp`, `docs`.
-- Acceptance check for this step: inside the image, `ffmpeg -version` and `ffprobe -version` succeed and `node -e "require('sharp')"` loads.
+### 5. Worker image (`Dockerfile.worker`) — DONE
+- `FROM node:24-bookworm-slim`; `COPY --from=mwader/static-ffmpeg:8.1.2 /ffmpeg /ffprobe /usr/local/bin/`; `npm ci && npm cache clean --force` (the cache is ~120MB in-layer otherwise); run as the base image's non-root `node` user.
+- **Entry is `node_modules/.bin/tsx watch src/worker/index.ts` — never `npx`.** Verified by signal test: under `npx`, SIGTERM is not forwarded to the child, so the graceful-drain handler never runs and the container exits 1; run directly, the handler fires and it exits 0. `watch` itself forwards signals correctly, so live reload is safe to keep.
+- **Single stage, not multi-stage.** `sharp` ships prebuilt glibc binaries, so no python3/make/g++ is needed; the build is ~3× faster at the same final image size once the npm cache is cleaned.
+- **The image carries `src`** rather than relying on the compose bind mount, so it can run standalone — which is exactly what the Step 13 testcontainers suite does. Compose still mounts `./src` on top for live reload.
+- `.dockerignore`: host `node_modules` (wrong platform for `sharp`), `.git`, `.env`, `tmp`, `dist`, plus `tests`, `public`, infra config, docs, and `src/**/*.test.ts`.
+- Acceptance check, enforced as a build step so a broken binary fails the build rather than the first transcode: `ffmpeg -version`, `ffprobe -version`, and `node -e "require('sharp')"` all succeed.
 - *(Fallback only if the static build ever misbehaves: install ffmpeg from Debian packages in the image instead. The host is never touched either way.)*
 
 ### 6. AMQP topology (`src/lib/topology.ts`)

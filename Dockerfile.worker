@@ -1,0 +1,32 @@
+FROM node:24-bookworm-slim
+
+# Static ffmpeg + ffprobe from a pinned multi-arch image. This is the only place
+# ffmpeg exists -- the host never installs it.
+COPY --from=mwader/static-ffmpeg:8.1.2 /ffmpeg /ffprobe /usr/local/bin/
+
+WORKDIR /app
+
+# Dependencies first, so a source edit doesn't invalidate the npm layer.
+# No build toolchain needed: sharp ships prebuilt linux binaries for glibc.
+COPY --chown=node:node package.json package-lock.json ./
+# Clean the cache in the same layer, or it ships ~120MB of tarballs in the image.
+RUN npm ci && npm cache clean --force
+
+# The image is self-contained: it carries the source, so it can run without a
+# bind mount (testcontainers does exactly that). Compose still mounts ./src on
+# top of this for live reload during development.
+COPY --chown=node:node tsconfig.json ./
+COPY --chown=node:node src ./src
+
+# Acceptance gate -- a broken binary fails the build, not the first transcode.
+RUN ffmpeg -version > /dev/null \
+    && ffprobe -version > /dev/null \
+    && node -e "require('sharp')" \
+    && echo "OK: ffmpeg, ffprobe and sharp are all operational"
+
+USER node
+
+# Run tsx directly, NOT via npx: npx does not forward SIGTERM to its child, so
+# the worker's graceful-drain handler would never fire and every shutdown would
+# abandon its in-flight transcode. Verified by signal test.
+CMD ["node_modules/.bin/tsx", "watch", "src/worker/index.ts"]
