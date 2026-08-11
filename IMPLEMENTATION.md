@@ -239,7 +239,7 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - Acceptance check, enforced as a build step so a broken binary fails the build rather than the first transcode: `ffmpeg -version`, `ffprobe -version`, and `node -e "require('sharp')"` all succeed.
 - *(Fallback only if the static build ever misbehaves: install ffmpeg from Debian packages in the image instead. The host is never touched either way.)*
 
-### 6. AMQP topology (`src/lib/topology.ts`)
+### 6. AMQP topology (`src/lib/topology.ts`) — DONE
 The single definition of every exchange, queue, binding and argument — asserted idempotently by both entrypoints and by `scripts/infra-init.ts`.
 
 | Object | Type | Args |
@@ -256,6 +256,14 @@ The single definition of every exchange, queue, binding and argument — asserte
 Two subtleties to encode in comments, because they are the actual lesson:
 - Dead-lettering **preserves the original routing key**, so a message expiring out of `q.retry` re-enters `media.jobs` and lands back on the queue it came from. No per-queue retry queues needed.
 - A **uniform** per-queue TTL avoids the classic delay-queue trap: with per-*message* TTLs, a message with a long TTL at the head blocks shorter-TTL messages behind it, because RabbitMQ only expires from the head.
+- `RETRY_TTL_MS` comes from `src/config` — never hardcoded here. Note that **queue arguments are immutable**: changing the TTL against a broker that already has `q.retry` fails with `PRECONDITION_FAILED` (406) until that queue is deleted.
+- `assertTopology` takes its channel as a **structural** `TopologyChannel` interface (the three methods it uses), so tests pass a plain recording fake — no module mocking, no casts.
+- **Verified against a live broker**, not just unit-tested: publish → `nack(requeue:false)` → lands in `q.retry` → after the TTL returns to `q.image` with routing key `job.image.transform` intact. The resulting header is:
+  ```
+  x-death[0]  queue=q.retry  reason=expired    count=1
+  x-death[1]  queue=q.image  reason=rejected   count=1
+  ```
+  This is the concrete evidence for the retry-counting invariant: `x-death[0]` is the **q.retry/expired** entry, so `retry.ts` must select by *queue name + `reason: rejected`* or it will count the wrong thing.
 
 ### 7. API (`src/api/`)
 - `app.ts` exports `createApp(deps)` — registers `@fastify/multipart` (with `limits.fileSize = MAX_UPLOAD_BYTES`), `@fastify/static` for `public/`, routes, and a central error handler. **No `listen()`** — so tests can drive it directly.
