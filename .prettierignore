@@ -1,0 +1,11 @@
+# Hand-authored prose and reference tables. Prettier reflows markdown tables and
+# wraps prose in ways that fight the deliberate layout of these files, and they
+# are read far more often than they are edited.
+*.md
+.claude/
+
+# Not ours to format.
+node_modules/
+dist/
+public/
+grafana/provisioning/

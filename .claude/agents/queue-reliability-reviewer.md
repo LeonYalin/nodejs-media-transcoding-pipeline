@@ -18,7 +18,7 @@ Checklist:
 - **Idempotency:** output keys derived from `jobId` (+ rendition) only. Nothing that appends, timestamps, or randomizes a key — redelivery must overwrite.
 - **Fan-out barrier:** the completion check uses the `HINCRBY` return value, not a read-then-write; a get/compare/set barrier races across replicas.
 - **Shutdown:** SIGTERM cancels consumers first, then finishes the in-flight job, then closes. Not `process.exit()` in the middle of a transcode.
-- **Boundaries:** env only via `src/config`; logs via `src/lib/logger`; metrics via `src/lib/metrics`; S3 only through `src/lib/object-store`; Redis writes only through `src/lib/job-store`; topology only from `src/lib/topology`. No stray `process.env` / `console.log` / ad-hoc `S3Client`.
+- **Boundaries:** env only via `src/config`; logs via `src/lib/logger`; metrics via `src/lib/metrics`; S3 only through `src/lib/object-repository`; Redis writes only through `src/lib/jobs-repository`; topology only from `src/lib/topology`. No stray `process.env` / `console.log` / ad-hoc `S3Client`.
 - **Tests:** `vi.mock` count must be zero; new dependencies must arrive through the `createX(deps)` factory.
 
 Optionally run `npm run typecheck`, `npm run lint` and `npm test` to back findings. Report concise ✅/⚠️/❌ per item with file:line; suggest fixes but don't apply them unless asked.

@@ -18,7 +18,7 @@ Ground truth (read it, don't restate it): `IMPLEMENTATION.md` (Project Structure
 Each should return only the file that legitimately owns it:
 - `process.env` → only `src/config/index.ts` and `vitest.config.ts`
 - `console.log` / `console.error` → zero hits (use `src/lib/logger`)
-- `new S3Client` / `PutObjectCommand` / `GetObjectCommand` → only `src/lib/s3.ts` and `src/lib/object-store.ts`
+- `new S3Client` / `PutObjectCommand` / `GetObjectCommand` → only `src/lib/s3.ts` and `src/lib/object-repository.ts`
 - `new Redis(` → only `src/lib/redis.ts`
 - `assertQueue` / `assertExchange` / `bindQueue` → only `src/lib/topology.ts`
 - `new client.Counter` / `Gauge` / `Histogram` → only `src/lib/metrics.ts`
@@ -27,7 +27,7 @@ Each should return only the file that legitimately owns it:
 ## 3. Code style (matches the ETL repo)
 - TypeScript strict, ESM. Relative imports carry the **`.js` extension** (NodeNext) — a missing extension is a runtime failure, not a lint nit.
 - **Double quotes**, semicolons, 2-space indent, trailing commas (`.prettierrc.json` is the authority — flag any file that `prettier --check` would rewrite). Note this repo runs Prettier where the ETL repo did not, so Prettier's array formatting (`["a", "b"]`) supersedes the ETL's inner-space style (`[ "a", "b" ]`) — Prettier has no option for the latter. Don't "restore" it.
-- Modules export `createX(deps)` factories with structurally-typed dependency objects. No classes for services, no DI container.
+- Modules export `createX(deps)` factories — a dep object, or a single positional collaborator when there is exactly one (`createObjectRepository(client)`, `createUploadRoutes(uploadService)`). No classes for services, no DI container.
 - Entrypoints (`src/api/index.ts`, `src/worker/index.ts`, `scripts/*`) are the **only** files that construct real clients and the only ones with import-time side effects, guarded by `import.meta.url === pathToFileURL(process.argv[1]).href`.
 - Comments explain **why**, not what — and are used on the non-obvious decisions (a surprising flag, a workaround, an ordering constraint). Flag both undocumented subtleties and comments that merely narrate the next line.
 - No `any`. No non-null `!` in `src/` — those values come from I/O. Test files are exempt (enforced by an `eslint.config.js` override, not inline disables): a test asserting on a fixture it just assigned is safe.

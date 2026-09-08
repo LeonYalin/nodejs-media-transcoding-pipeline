@@ -29,6 +29,25 @@ export function isVideoMime(mime: string): boolean {
 }
 
 /**
+ * Canonical extension per allowed MIME type.
+ *
+ * The source object's key is built from this rather than from the uploaded
+ * filename: the filename is client-controlled, may be absent, and may carry an
+ * extension that contradicts the declared type. ffprobe reads the container
+ * from the bytes, but a truthful extension keeps the bucket browsable.
+ */
+export const EXTENSION_BY_MIME: Record<MimeType, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/avif": ".avif",
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+  "video/webm": ".webm",
+  "video/x-matroska": ".mkv",
+};
+
+/**
  * One rung of the HLS ladder.
  *
  * `width` is carried explicitly rather than derived at playlist time: the master
