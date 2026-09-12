@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { JobsRepository } from "../lib/jobs-repository.js";
 import { jobEventsChannel } from "../lib/jobs-repository.js";
+import type { JobEventsRequest } from "./contracts.js";
 
 /**
  * The slice of an ioredis client an SSE stream needs. Structural so tests can
@@ -24,26 +25,28 @@ export interface SseSubscriber {
 export interface SseRegistry {
   add(close: () => void): () => void;
   closeAll(): void;
-  readonly size: number;
+  size(): number;
 }
 
 export function createSseRegistry(): SseRegistry {
   const open = new Set<() => void>();
 
-  return {
-    add(close) {
-      open.add(close);
-      return () => open.delete(close);
-    },
-    closeAll() {
-      // Copy first: each close() unregisters itself from the live set.
-      for (const close of [...open]) close();
-      open.clear();
-    },
-    get size() {
-      return open.size;
-    },
-  };
+  function add(close: () => void): () => void {
+    open.add(close);
+    return () => open.delete(close);
+  }
+
+  function closeAll(): void {
+    // Copy first: each close() unregisters itself from the live set.
+    for (const close of [...open]) close();
+    open.clear();
+  }
+
+  function size(): number {
+    return open.size;
+  }
+
+  return { add, closeAll, size };
 }
 
 export interface SseDeps {
@@ -64,7 +67,7 @@ export function createSseHandler({
   heartbeatMs = HEARTBEAT_DEFAULT_MS,
 }: SseDeps) {
   return async function sseHandler(
-    request: FastifyRequest<{ Params: { id: string } }>,
+    request: FastifyRequest<JobEventsRequest>,
     reply: FastifyReply,
   ): Promise<void> {
     const jobId = request.params.id;

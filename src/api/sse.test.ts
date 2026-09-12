@@ -264,14 +264,14 @@ describe("createSseHandler", () => {
       registry,
     })(exchange.request, exchange.reply);
 
-    expect(registry.size).toBe(1);
+    expect(registry.size()).toBe(1);
 
     registry.closeAll();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(exchange.rawReply.writableEnded).toBe(true);
     expect(subscriber.hasQuit()).toBe(true);
-    expect(registry.size).toBe(0);
+    expect(registry.size()).toBe(0);
   });
 
   it("a client disconnect deregisters the stream from the registry", async () => {
@@ -287,7 +287,7 @@ describe("createSseHandler", () => {
 
     exchange.disconnect();
 
-    expect(registry.size).toBe(0);
+    expect(registry.size()).toBe(0);
   });
 
   it("tears the subscriber down if the stream fails to start", async () => {

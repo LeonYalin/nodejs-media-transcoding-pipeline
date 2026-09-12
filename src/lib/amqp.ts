@@ -78,44 +78,44 @@ export function createConfirmChannelProvider(source: ConfirmChannelSource) {
   let pending: Promise<ConfirmChannel> | null = null;
   let closed = false;
 
-  return {
-    async get() {
-      if (closed) throw new Error("Confirm channel provider is closed");
+  async function get(): Promise<ConfirmChannel> {
+    if (closed) throw new Error("Confirm channel provider is closed");
 
-      if (!pending) {
-        const attempt: Promise<ConfirmChannel> = (async () => {
-          const channel = await source.createConfirmChannel();
-          const forget = () => {
-            if (pending === attempt) pending = null;
-          };
-          channel.on("close", forget);
-          // Without a listener a channel-level error is an unhandled 'error'
-          // event, which would take the process down.
-          channel.on("error", (error) => {
-            logger.warn({ err: error }, "AMQP confirm channel error");
-            forget();
-          });
-          return channel;
-        })();
-
-        // A failed open must not be cached, or every later publish replays it.
-        attempt.catch(() => {
+    if (!pending) {
+      const attempt: Promise<ConfirmChannel> = (async () => {
+        const channel = await source.createConfirmChannel();
+        const forget = () => {
           if (pending === attempt) pending = null;
+        };
+        channel.on("close", forget);
+        // Without a listener a channel-level error is an unhandled 'error'
+        // event, which would take the process down.
+        channel.on("error", (error) => {
+          logger.warn({ err: error }, "AMQP confirm channel error");
+          forget();
         });
-        pending = attempt;
-      }
+        return channel;
+      })();
 
-      return pending;
-    },
+      // A failed open must not be cached, or every later publish replays it.
+      attempt.catch(() => {
+        if (pending === attempt) pending = null;
+      });
+      pending = attempt;
+    }
 
-    async close() {
-      closed = true;
-      const channel = pending;
-      pending = null;
-      if (!channel) return;
-      await channel.then((c) => c.close()).catch(() => undefined);
-    },
-  };
+    return pending;
+  }
+
+  async function close(): Promise<void> {
+    closed = true;
+    const channel = pending;
+    pending = null;
+    if (!channel) return;
+    await channel.then((c) => c.close()).catch(() => undefined);
+  }
+
+  return { get, close };
 }
 
 export type ConfirmChannelProvider = ReturnType<typeof createConfirmChannelProvider>;
@@ -139,36 +139,36 @@ export function createJobPublisher({
   channelProvider,
   exchange = EXCHANGES.JOBS,
 }: JobPublisherDeps) {
-  return {
-    async publish(routingKey: string, message: JobMessage): Promise<void> {
-      // Parse on the way out: the wire contract is enforced here, once, rather
-      // than trusted at three call sites.
-      const payload = Buffer.from(JSON.stringify(JobMessageSchema.parse(message)));
-      const channel = await channelProvider.get();
+  async function publish(routingKey: string, message: JobMessage): Promise<void> {
+    // Parse on the way out: the wire contract is enforced here, once, rather
+    // than trusted at three call sites.
+    const payload = Buffer.from(JSON.stringify(JobMessageSchema.parse(message)));
+    const channel = await channelProvider.get();
 
-      await new Promise<void>((resolve, reject) => {
-        const accepted = channel.publish(
-          exchange,
-          routingKey,
-          payload,
-          {
-            persistent: true,
-            contentType: "application/json",
-            messageId: message.jobId,
-          },
-          (error) => (error ? reject(error) : resolve()),
-        );
+    await new Promise<void>((resolve, reject) => {
+      const accepted = channel.publish(
+        exchange,
+        routingKey,
+        payload,
+        {
+          persistent: true,
+          contentType: "application/json",
+          messageId: message.jobId,
+        },
+        (error) => (error ? reject(error) : resolve()),
+      );
 
-        // `false` means the channel's write buffer is full. The message is still
-        // queued in the client, and the confirm callback still fires, so there
-        // is nothing to do but let it drain -- worth logging, since sustained
-        // backpressure here means the broker cannot keep up with ingest.
-        if (!accepted) {
-          logger.warn({ routingKey }, "AMQP publish buffer full; awaiting drain");
-        }
-      });
-    },
-  };
+      // `false` means the channel's write buffer is full. The message is still
+      // queued in the client, and the confirm callback still fires, so there
+      // is nothing to do but let it drain -- worth logging, since sustained
+      // backpressure here means the broker cannot keep up with ingest.
+      if (!accepted) {
+        logger.warn({ routingKey }, "AMQP publish buffer full; awaiting drain");
+      }
+    });
+  }
+
+  return { publish };
 }
 
 export type JobPublisher = ReturnType<typeof createJobPublisher>;

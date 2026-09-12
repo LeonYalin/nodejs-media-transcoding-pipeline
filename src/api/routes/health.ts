@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import type { Registry } from "prom-client";
 import { registry as defaultRegistry } from "../../lib/metrics.js";
+import type { HealthCheckStatus, HealthReply, MetricsReply } from "../contracts.js";
 
 /**
  * Each check throws (or rejects) when its dependency is unreachable. Injected as
@@ -19,12 +20,12 @@ export function createHealthRoutes({
   registry = defaultRegistry,
 }: HealthRoutesDeps): FastifyPluginAsync {
   return async function healthRoutes(app: FastifyInstance) {
-    app.get("/health", async (request, reply) => {
+    app.get<{ Reply: HealthReply }>("/health", async (request, reply) => {
       const names = Object.keys(checks);
       // Run them concurrently: a health probe should cost one timeout, not N.
       const settled = await Promise.allSettled(names.map((name) => checks[name]()));
 
-      const results: Record<string, "ok" | "unavailable"> = {};
+      const results: Record<string, HealthCheckStatus> = {};
       settled.forEach((result, index) => {
         results[names[index]] = result.status === "fulfilled" ? "ok" : "unavailable";
         if (result.status === "rejected") {
@@ -39,7 +40,7 @@ export function createHealthRoutes({
     });
 
     // The API scrapes through Fastify; only the workers need lib/metrics-server.
-    app.get("/metrics", async (_request, reply) => {
+    app.get<{ Reply: MetricsReply }>("/metrics", async (_request, reply) => {
       return reply.header("content-type", registry.contentType).send(await registry.metrics());
     });
   };

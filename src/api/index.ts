@@ -51,8 +51,8 @@ export async function main(): Promise<void> {
 
   // Asserts the topology on connect, so the API can publish into a broker that
   // has never seen this app before.
-  const amqp = await connectAmqp({ url: config.AMQP_URL });
-  const channelProvider = createConfirmChannelProvider(amqp);
+  const amqpConnection = await connectAmqp({ url: config.AMQP_URL });
+  const channelProvider = createConfirmChannelProvider(amqpConnection);
   const jobPublisher = createJobPublisher({ channelProvider });
 
   const uploadService = createUploadService({
@@ -66,6 +66,22 @@ export async function main(): Promise<void> {
   // ended explicitly before `app.close()` can resolve.
   const sseRegistry = createSseRegistry();
 
+  const healthChecks = {
+    broker: () =>
+      withTimeout(
+        amqpConnection.createChannel().then((channel) => channel.close()),
+        "broker",
+      ),
+    storage: () =>
+      withTimeout(
+        objectRepository.bucketExists(config.BUCKET_UPLOADS).then((exists: boolean) => {
+          if (!exists) throw new Error(`Bucket ${config.BUCKET_UPLOADS} is missing`);
+        }),
+        "storage",
+      ),
+    redis: () => withTimeout(redis.ping(), "redis"),
+  };
+
   const app = await createApp({
     uploadService,
     jobsRepository,
@@ -73,21 +89,7 @@ export async function main(): Promise<void> {
     // ordinary commands, so this must never be the jobs repository's client.
     createSubscriber: () => createRedisSubscriber({ url: config.REDIS_URL }),
     sseRegistry,
-    healthChecks: {
-      broker: () =>
-        withTimeout(
-          amqp.createChannel().then((channel) => channel.close()),
-          "broker",
-        ),
-      storage: () =>
-        withTimeout(
-          objectRepository.bucketExists(config.BUCKET_UPLOADS).then((exists: boolean) => {
-            if (!exists) throw new Error(`Bucket ${config.BUCKET_UPLOADS} is missing`);
-          }),
-          "storage",
-        ),
-      redis: () => withTimeout(redis.ping(), "redis"),
-    },
+    healthChecks,
     maxUploadBytes: config.MAX_UPLOAD_BYTES,
   });
 
@@ -108,7 +110,7 @@ export async function main(): Promise<void> {
       sseRegistry.closeAll();
       await app.close();
       await channelProvider.close();
-      await amqp.close();
+      await amqpConnection.close();
       await redis.quit();
       await stopTracing();
       process.exit(0);

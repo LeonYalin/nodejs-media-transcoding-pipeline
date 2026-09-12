@@ -9,6 +9,7 @@ import { ZodError } from "zod";
 import { UnsupportedMediaError } from "../domain/media.js";
 import type { JobsRepository } from "../lib/jobs-repository.js";
 import { logger as defaultLogger } from "../lib/logger.js";
+import type { ErrorReply, ValidationErrorReply } from "./contracts.js";
 import { createHealthRoutes, type HealthChecks } from "./routes/health.js";
 import { createJobRoutes } from "./routes/jobs.js";
 import { createUploadRoutes } from "./routes/uploads.js";
@@ -62,23 +63,29 @@ export async function createApp(deps: AppDeps): Promise<FastifyInstance> {
     await app.register(fastifyStatic, { root: PUBLIC_DIR, prefix: "/" });
   }
 
+  // No route generic to attach here, so each payload is annotated at the point
+  // of construction instead -- same contract, still compile-checked.
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof ZodError) {
-      return reply.status(400).send({ error: "Invalid request", details: error.issues });
+      const body: ValidationErrorReply = { error: "Invalid request", details: error.issues };
+      return reply.status(400).send(body);
     }
     // Narrow on purpose: `MediaDomainError.retryable` answers "will a redelivery
     // succeed?" for worker/retry.ts, which is not the same question as "what
     // status does the client get" -- ObjectNotFoundError is non-retryable but
     // would deserve a 404 here, not a 415.
     if (error instanceof UnsupportedMediaError) {
-      return reply.status(415).send({ error: error.message });
+      const body: ErrorReply = { error: error.message };
+      return reply.status(415).send(body);
     }
     if (typeof error.statusCode === "number" && error.statusCode < 500) {
-      return reply.status(error.statusCode).send({ error: error.message });
+      const body: ErrorReply = { error: error.message };
+      return reply.status(error.statusCode).send(body);
     }
 
     request.log.error({ err: error }, "Unhandled request error");
-    return reply.status(500).send({ error: "Internal server error" });
+    const body: ErrorReply = { error: "Internal server error" };
+    return reply.status(500).send(body);
   });
 
   await app.register(createUploadRoutes(deps.uploadService));

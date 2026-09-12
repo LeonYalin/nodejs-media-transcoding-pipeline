@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
+import type { CreateUploadReply } from "../contracts.js";
 import type { UploadRejectionReason, UploadService } from "../upload-service.js";
 
 /**
@@ -16,7 +17,7 @@ const STATUS_BY_REASON: Record<UploadRejectionReason, number> = {
 
 export function createUploadRoutes(uploadService: UploadService): FastifyPluginAsync {
   return async function uploadRoutes(app: FastifyInstance) {
-    app.post("/uploads", async (request, reply) => {
+    app.post<{ Reply: CreateUploadReply }>("/uploads", async (request, reply) => {
       const outcome = await uploadService.acceptUpload(await request.file(), request.log);
 
       if (!outcome.accepted) {
