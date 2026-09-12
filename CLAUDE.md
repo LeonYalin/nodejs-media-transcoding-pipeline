@@ -13,22 +13,28 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 - **Docker:** RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger, **and the workers** — scaled as compose replicas. ffmpeg/ffprobe live only inside the worker image.
 
 ## Component map
-- `src/api/` — `app.ts` (`createApp`, no listen), `index.ts` (entrypoint), `routes/{uploads,jobs,health}.ts`, `sse.ts`.
+- `src/api/` — `app.ts` (`createApp`, no listen), `index.ts` (entrypoint), `upload-service.ts` (the ingest orchestration), `routes/{uploads,jobs,health}.ts`, `sse.ts`.
 - `src/worker/` — `index.ts` (composition root + signals), `consumer.ts` (channel/prefetch/ack orchestration), `retry.ts` (pure retry-vs-park), `workspace.ts` (temp dirs), `handlers/{image,video-plan,video-rendition}.ts`.
 - `src/media/` — pure/near-pure media core: `ladder.ts` (rendition selection), `hls.ts` (master playlist), `ffmpeg.ts`, `images.ts`.
-- `src/lib/` — `topology.ts` (the AMQP definition), `amqp`, `s3`, `object-store` (the only S3 caller), `redis`, `job-store` (the only Redis writer), `logger`, `metrics`, `metrics-server`, `tracing`.
+- `src/lib/` — `topology.ts` (the AMQP definition), `amqp`, `s3`, `object-repository` (the only S3 caller), `redis`, `jobs-repository` (the only Redis writer), `logger`, `metrics`, `metrics-server`, `tracing`.
 - `src/config/` — env → zod-validated typed config (the only place that reads `process.env`).
 - `src/domain/` — `job.ts` (wire + record schemas), `media.ts` (MIME allowlist, error classes).
 - `tests/integration/` — testcontainers suite; unit tests sit beside their source as `*.test.ts`.
 
 ## Conventions (non-negotiable)
-- TypeScript strict, ESM. Env only via `src/config`; logs only via `src/lib/logger`; metrics only via `src/lib/metrics`; S3 only via `src/lib/object-store`; Redis writes only via `src/lib/job-store`; AMQP topology only from `src/lib/topology`.
+- TypeScript strict, ESM. Env only via `src/config`; logs only via `src/lib/logger`; metrics only via `src/lib/metrics`; S3 only via `src/lib/object-repository`; Redis writes only via `src/lib/jobs-repository`; AMQP topology only from `src/lib/topology`.
 - **Messaging invariants:** publish `persistent` on a **confirm channel** and `waitForConfirms()` *before* replying `202` — never acknowledge a client for a job the broker hasn't accepted. `ack` **only after** the derivatives are uploaded and Redis is updated. `prefetch(1, true)` — channel-global, so one container = one job in flight. Failures `nack(requeue:false)` into the retry path; non-retryable errors and `MAX_ATTEMPTS` go straight to `q.parked`, never a poison-message loop.
 - **Retry counting:** read the `x-death` entry matching *this* work queue with `reason: rejected` — not `x-death[0]`, which may be the `q.retry`/`expired` entry.
 - **Memory:** never buffer a media file. Uploads stream request→MinIO; image transcodes stream MinIO→sharp→MinIO. Only video uses a temp dir (ffmpeg needs a seekable file), always removed in `finally`, including on the park path.
 - **Idempotency:** output keys are deterministic from `jobId` (+ rendition) — at-least-once redelivery must overwrite, never duplicate.
 - **Shutdown:** SIGTERM → cancel consumers, finish the in-flight job, ack, close, flush traces.
-- **Dependency injection:** modules export `createX(deps)` factories; entrypoints are the only place that builds real clients and the only place with import-time side effects (guarded by `import.meta.url === pathToFileURL(process.argv[1]).href`). Config is the one deliberate singleton.
+- **Layering:** route (HTTP only) → `*-service` (orchestration) → `*-repository` (the single access path to one datastore) → client. The test is collaborator count, never amount of logic: one datastore and no peers → repository, however much encoding, indexing or query shaping it owns; two or more collaborators plus a use case to sequence (and its compensating actions) → service. Repositories and services export their type as `ReturnType<typeof createX>` rather than a hand-written interface; only *input* contracts are hand-written. Deps narrow with `Pick<>` to the methods actually called.
+- **Scope:** declare next to first use; never wedge a declaration between sibling blocks (e.g. two route registrations) — hoist it above them. Module scope stays right for pure helpers, constant tables, zod schemas and `import.meta.url` paths; so does closure state a listener captures.
+- **HTTP contracts:** every route declares Fastify generics from `src/api/contracts.ts` — `*Request` for `Params`/`Querystring`/`Body`, `*Reply` for the response body, all sharing `ErrorReply`. Derive from the zod schema with `z.infer` unless the schema coerces.
+- **Factories:** a `createX` returning an object declares named functions with explicit return types and ends `return { a, b }` — never inline methods in the literal. Test fakes are exempt: they pin their shape with a typed const.
+- **Verbs:** `createX` wires a collaborator and returns it; `connectX` awaits a network handshake and can throw; `start`/`stop` drive a running resource; `assert` is idempotent setup I/O; `build`/`is` stay pure. Choose the verb for what the call can do to you, not for uniformity.
+- **Naming:** collaborators carry their role suffix in variable names and dep keys — `uploadService`, `jobsRepository`, `objectRepository`, `jobPublisher` — so the layer is visible at every call site. Never "store".
+- **Dependency injection:** modules export `createX(deps)` factories — a dep object, or a single positional collaborator when there is exactly one (`createObjectRepository(client)`). Entrypoints are the only place that builds real clients and the only place with import-time side effects (guarded by `import.meta.url === pathToFileURL(process.argv[1]).href`). Config is the one deliberate singleton.
 - **Tests:** no module mocking (`vi.mock` must stay at zero) — inject a fake, or use a real container. Fakes only for what a real dependency can't do (failure injection, timer control).
 - Env vars load via Node `--env-file=.env` (no `dotenv`).
 

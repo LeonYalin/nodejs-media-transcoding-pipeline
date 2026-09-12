@@ -37,7 +37,7 @@ Tune: `WORKERS=8 npm run up` first, then re-run and watch queue depth drain in G
 Mount a host file to inspect it: add `-v "$PWD/fixtures:/fixtures"` and point at `/fixtures/<file>`.
 
 ## Endpoints (defaults)
-- API + dashboard: `http://localhost:3000` — `POST /uploads`, `GET /jobs`, `/jobs/:id`, `/jobs/:id/events`, `/healthz`, `/metrics`
+- API + dashboard: `http://localhost:3000` — `POST /uploads`, `GET /jobs`, `/jobs/:id`, `/jobs/:id/events`, `/health`, `/metrics`
 - RabbitMQ management: `http://localhost:15672` (media/media) · broker metrics `:15692/metrics`
 - MinIO console: `http://localhost:9001` · S3 endpoint `http://localhost:9000`
 - RedisInsight: `http://localhost:5540`

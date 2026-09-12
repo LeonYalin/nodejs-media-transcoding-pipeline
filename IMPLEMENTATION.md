@@ -20,10 +20,9 @@ This plan builds that as a **small but production-shaped learning app**: a Fasti
 - **Reliability:** manual `ack` after success only; failures `nack(requeue:false)` into a **TTL delay queue** that dead-letters back to the work queue; after `MAX_ATTEMPTS` (read from the `x-death` header) the message is **parked** in a terminal DLQ and the job is marked failed.
 - **Job state:** Redis — job records + progress, with pub/sub feeding **SSE** to the browser.
 - **Observability:** pino logs, `prom-client` → Prometheus → Grafana, **plus OpenTelemetry traces → Jaeger** so a single trace spans API → RabbitMQ → worker. Every datastore also gets a browser UI.
-- **Code structure:** modules export `createX(deps)` factories with structurally-typed dependencies; each process entrypoint is the composition root and the only place with import-time side effects. Config is the one deliberate singleton. No DI container.
+- **Code structure:** modules export `createX(deps)` factories with structurally-typed dependencies (a dep object, or a single positional collaborator when there is exactly one); each process entrypoint is the composition root and the only place with import-time side effects. Config is the one deliberate singleton. No DI container.
 - **Testing:** Vitest unit tests (pure modules + injected fakes) + a testcontainers integration suite (RabbitMQ + MinIO + Redis + the built worker image). No module mocking.
 - **Env loading:** no `dotenv` — Node's built-in `--env-file=.env`, then zod-validated in `src/config`.
-- **Included this time (deferred in the previous project):** ESLint + Prettier and a GitHub Actions CI workflow.
 
 ---
 
@@ -106,8 +105,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 .
 ├── docker-compose.yml · Dockerfile.worker · .dockerignore
 ├── .env.example · Makefile · package.json · tsconfig.json
-├── vitest.config.ts · eslint.config.js · .prettierrc.json
-├── .github/workflows/ci.yml            # lint + typecheck + unit + worker image build
+├── vitest.config.ts · eslint.config.js · .prettierrc.json · .prettierignore
 ├── rabbitmq/enabled_plugins            # rabbitmq_management, rabbitmq_prometheus
 ├── prometheus/prometheus.yml           # api (host.docker.internal), worker (dns_sd), rabbitmq
 ├── grafana/provisioning/…              # datasource + dashboards/{pipeline,runtime}.json
@@ -127,9 +125,9 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
     │   ├── amqp.ts                     # connection/channel factories + reconnect
     │   ├── topology.ts                 # THE single definition of exchanges/queues/bindings/args
     │   ├── s3.ts                       # S3Client for MinIO (forcePathStyle, static creds)
-    │   ├── object-store.ts             # the only place that calls S3 (putStream/getStream/putDir/…)
+    │   ├── object-repository.ts        # the only place that calls S3 (putStream/getStream/…)
     │   ├── redis.ts
-    │   └── job-store.ts                # the only place that writes Redis (record + progress publish)
+    │   └── jobs-repository.ts          # the only place that writes Redis (record + progress publish)
     ├── media/                          # PURE / near-pure, unit-tested without infra
     │   ├── ladder.ts                   # sourceHeight → rendition list (never upscale)
     │   ├── hls.ts                      # master playlist generation
@@ -138,6 +136,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
     ├── api/
     │   ├── app.ts                      # createApp(deps) — plugins, routes, no listen()
     │   ├── index.ts                    # composition root (tracing→config→clients→listen→signals)
+    │   ├── upload-service.ts           # the accept-an-upload saga; routes stay thin
     │   ├── routes/{uploads,jobs,health}.ts
     │   └── sse.ts                      # SSE stream helper (heartbeat + cleanup on close)
     └── worker/
@@ -205,7 +204,6 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - `package.json` (ESM, `type: module`), `tsconfig.json` (strict, `moduleResolution: NodeNext`).
 - **Note:** TypeScript is pinned to `^5` — `typescript-eslint@8` declares `typescript >=4.8.4 <6.1.0`, so TS 7 would break linting. (The ETL repo could run TS 7 only because it deferred ESLint.)
 - Install deps: `fastify @fastify/multipart @fastify/static amqplib @aws-sdk/client-s3 @aws-sdk/lib-storage sharp fluent-ffmpeg ioredis zod pino prom-client @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-{http,fastify,amqplib,ioredis,aws-sdk}`; dev: `tsx typescript @types/node @types/fluent-ffmpeg pino-pretty vitest testcontainers @testcontainers/rabbitmq autocannon eslint prettier concurrently`.
-- npm scripts pass `--env-file=.env` to `tsx` (no `dotenv`). `eslint.config.js` (flat config) + `.prettierrc.json`. `Makefile` mirrors the npm scripts.
 
 ### 2. Config (`src/config/index.ts`) — DONE
 - Read `process.env`, validate with zod, export typed `config` + a pure `loadConfig(env)` that **throws** rather than exiting (so tests can assert on it).
@@ -265,11 +263,42 @@ Two subtleties to encode in comments, because they are the actual lesson:
   ```
   This is the concrete evidence for the retry-counting invariant: `x-death[0]` is the **q.retry/expired** entry, so `retry.ts` must select by *queue name + `reason: rejected`* or it will count the wrong thing.
 
-### 7. API (`src/api/`)
+### 7. API (`src/api/`) — DONE
+This step also had to build the `src/lib` I/O modules both entrypoints share, since
+nothing before it needed them: `redis.ts`, `s3.ts`, `object-repository.ts`, `amqp.ts`,
+`jobs-repository.ts` and `tracing.ts` (the last one minimal; Step 10 fills in the dashboards
+and the trace-continuity check).
+
+Five deliberate deviations from the text below, each for a stated reason:
+- **Per-message confirm callback, not `waitForConfirms()`.** `waitForConfirms` resolves
+  for *every* outstanding publish on the channel, so under concurrent uploads each
+  request inherits the latency of the slowest one — which defeats the "202 in
+  milliseconds" claim. `ConfirmChannel.publish`'s callback confirms exactly one message
+  and upholds the same invariant. Lives in `lib/amqp.ts`'s `createJobPublisher`.
+- **The object key is `{jobId}/source{ext}`, with the bucket passed separately.** The
+  data-contract notation `media-uploads/{jobId}/source{ext}` is bucket + key; folding
+  the bucket name into the key too would have written `media-uploads/media-uploads/…`.
+- **The extension comes from the MIME type** (`EXTENSION_BY_MIME` in `domain/media.ts`),
+  not `path.extname(filename)`: the filename is client-controlled and may be absent or
+  contradict the declared type.
+- **The upload saga lives in `api/upload-service.ts`, not in the route.** Written first as a
+  108-line handler with four `try/catch` blocks, it was extracted after comparing against the
+  ETL project, whose routes are ~4 lines because a service sits behind them. The route now only
+  maps a returned `UploadOutcome` union to a status code. Same reason the I/O modules are
+  `*-repository`, not `*-store`: the ETL project uses the word "store" nowhere.
+- **`GET /health`, not `/healthz`.** The `z` suffix is a Kubernetes-ism; nothing here runs on
+  Kubernetes, and the ETL project uses plain `/health`.
+
+Also worth recording: `@fastify/multipart` is registered with `throwFileSizeLimit: false`
+so an oversized body ends the stream quietly and sets `file.truncated`. Throwing mid-pipe
+would skip the upload service's cleanup, leaving the partial object in the bucket forever. And the
+confirm channel is handed out by a provider that re-opens it after a reconnect — amqplib's
+recovery restores the *connection*, but channels opened from it are dead afterwards.
+
 - `app.ts` exports `createApp(deps)` — registers `@fastify/multipart` (with `limits.fileSize = MAX_UPLOAD_BYTES`), `@fastify/static` for `public/`, routes, and a central error handler. **No `listen()`** — so tests can drive it directly.
-- `POST /uploads`: take `req.file()`, validate the MIME against the allowlist, pipe `file` straight into `@aws-sdk/lib-storage` `Upload` targeting `media-uploads/{jobId}/source{ext}` — the bytes never accumulate in RAM. After the upload resolves, **check `file.truncated`**; if the size limit was hit, delete the partial object and return `413`.
-- Then: write the Redis job record (`queued`), publish `JobMessage` on a **confirm channel** with `persistent: true`, `await waitForConfirms()`, and only then reply `202 { jobId, statusUrl, eventsUrl }`. If the confirm fails, mark the job failed and return `503` — never a `202` for a job the broker did not accept.
-- `GET /jobs/:id` (record), `GET /jobs` (recent, for the table), `GET /jobs/:id/events` (SSE), `GET /healthz` (broker + bucket + redis reachability), `GET /metrics`.
+- `POST /uploads`: the route delegates to `upload-service.ts`, which takes `req.file()`, validates the MIME against the allowlist, pipes `file` straight into `@aws-sdk/lib-storage` `Upload` targeting `media-uploads/{jobId}/source{ext}` — the bytes never accumulate in RAM. After the upload resolves, **check `file.truncated`**; if the size limit was hit, delete the partial object and return `413`.
+- Then: write the Redis job record (`queued`), publish `JobMessage` on a **confirm channel** with `persistent: true`, await the broker's confirm for *that message* (see the deviation note above), and only then reply `202 { jobId, statusUrl, eventsUrl }`. If the confirm fails, mark the job failed and return `503` — never a `202` for a job the broker did not accept.
+- `GET /jobs/:id` (record), `GET /jobs` (recent, for the table), `GET /jobs/:id/events` (SSE), `GET /health` (broker + bucket + redis reachability), `GET /metrics`.
 - `sse.ts`: set the SSE headers, subscribe a **dedicated** ioredis connection to `job:{id}:events` (subscriber-mode connections can't run normal commands), emit a comment heartbeat every 15 s, and unsubscribe + quit on `req.raw.on('close')`.
 
 ### 8. Worker consumer (`src/worker/consumer.ts`)
@@ -283,7 +312,7 @@ Two subtleties to encode in comments, because they are the actual lesson:
 ### 9. Handlers (`src/worker/handlers/`)
 - **`image.ts`** — `GetObject` body → `sharp` → `Upload`, **fully streaming, no temp file**: one pipeline for `full.webp` (max 1920 wide, `withoutEnlargement`), one for `thumb.webp` (320 wide). `sharp` releases the event loop to libvips' thread pool, so this stays non-blocking.
 - **`video-plan.ts`** — download the source into a workspace, `ffprobe` it, `buildLadder(height)`, extract `poster.jpg` at 1 s, write `renditionsExpected` to Redis, then publish one `job.video.rendition` message per rung (persistent, on a confirm channel) and ack. Fast job, deliberately separated from the heavy one.
-- **`video-rendition.ts`** — download the source, run ffmpeg → HLS (`-c:v libx264 -preset veryfast -c:a aac -hls_time HLS_SEGMENT_SECONDS -hls_playlist_type vod`) into the workspace, forward `.on('progress')` **throttled to ~1/s** into `job-store` (Redis hash + pub/sub → SSE), upload the segments + variant playlist, then `HINCRBY renditionsDone 1`; the worker whose increment returns `renditionsExpected` writes `master.m3u8` via `buildMasterPlaylist()` and marks the job `completed`. The `HINCRBY` return value is the atomic barrier — no locks.
+- **`video-rendition.ts`** — download the source, run ffmpeg → HLS (`-c:v libx264 -preset veryfast -c:a aac -hls_time HLS_SEGMENT_SECONDS -hls_playlist_type vod`) into the workspace, forward `.on('progress')` **throttled to ~1/s** into `jobs-repository` (Redis hash + pub/sub → SSE), upload the segments + variant playlist, then `HINCRBY renditionsDone 1`; the worker whose increment returns `renditionsExpected` writes `master.m3u8` via `buildMasterPlaylist()` and marks the job `completed`. The `HINCRBY` return value is the atomic barrier — no locks.
 - **`workspace.ts`** — `mkdtemp` per job, `rm -rf` in `finally`, always, including on the park path.
 - The **streaming (image) vs. temp-file (video)** split is deliberate and documented: ffmpeg needs a seekable input and writes many segment files, so disk is the correct answer there; anything that *can* stream, must.
 
@@ -311,7 +340,7 @@ Two subtleties to encode in comments, because they are the actual lesson:
 - `public/index.html`: vanilla JS — upload form, job table polled from `GET /jobs`, per-job progress bars driven by SSE, and an `hls.js` player pointed at the finished `master.m3u8`. No framework, no build step.
 
 ### 13. Tests
-- **Unit** (`*.test.ts` beside the source, no infra): `media/ladder` (no upscaling, tiny sources, exact rungs), `media/hls` (playlist text), `worker/retry` (the full `x-death` matrix: absent header, first rejection, mixed `rejected`/`expired` entries, non-retryable error, max attempts), `domain/*` schemas, `config` validation, and each handler against injected fake object-store/job-store/ffmpeg.
+- **Unit** (`*.test.ts` beside the source, no infra): `media/ladder` (no upscaling, tiny sources, exact rungs), `media/hls` (playlist text), `worker/retry` (the full `x-death` matrix: absent header, first rejection, mixed `rejected`/`expired` entries, non-retryable error, max attempts), `domain/*` schemas, `config` validation, and each handler against injected fake object-repository/jobs-repository/ffmpeg.
 - **Integration** (`tests/integration/`): boot RabbitMQ + MinIO + Redis containers and build the **worker image** via `GenericContainer.fromDockerfile` (cached between runs). Drive `createApp()` with a real upload, then assert: derivatives land in `media-outputs`; the HLS master playlist references every expected rung; a handler forced to fail increments `x-death` and reappears after the TTL; it parks in `q.parked` after `MAX_ATTEMPTS`; and SIGTERM mid-transcode leads to redelivery with no loss.
 - **No module mocking** — `vi.mock` stays at zero. Inject a fake, or use a real container. Fakes only for what a real dependency can't do on cue (failure injection, timer control).
 
