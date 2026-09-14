@@ -135,6 +135,9 @@ services:
       redis:
         condition: service_healthy
     stop_grace_period: 60s
+    # The worker fails fast when its AMQP channel dies instead of re-opening it
+    # in-process; the broker redelivers anything unacked and this brings it back.
+    restart: unless-stopped
     environment:
       # Keys must match src/config exactly -- every one has a default, so a
       # typo here fails silently by falling back to a localhost URL.

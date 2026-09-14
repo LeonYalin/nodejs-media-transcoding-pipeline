@@ -96,6 +96,15 @@ export class ObjectNotFoundError extends MediaDomainError {
 }
 
 /**
+ * A delivery that is not JSON or breaks its queue's schema. The bytes will be
+ * identical on every redelivery, so this parks immediately -- left retryable,
+ * a poison message would cycle through the delay queue MAX_ATTEMPTS times first.
+ */
+export class InvalidJobMessageError extends MediaDomainError {
+  readonly retryable = false;
+}
+
+/**
  * Anything that isn't a declared domain error is assumed transient (network
  * blips, broker hiccups) and therefore worth retrying.
  */
