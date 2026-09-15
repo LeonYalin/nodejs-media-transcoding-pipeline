@@ -172,4 +172,84 @@ describe("createJobsRepository", () => {
 
     expect(await redis.zrevrange(RECENT_JOBS_KEY, 0, 9)).toEqual([baseRecord.jobId]);
   });
+
+  it("writes only the fields an update changed, so a stale read cannot undo another worker", async () => {
+    const { redis } = createFakeRedis();
+    const repository = createJobsRepository({ redis, jobTtlSeconds: 60 });
+    await repository.createJob({ ...baseRecord, status: "processing" });
+
+    // Worker A reads the job, then worker B completes it before A writes.
+    const staleRead = await redis.hgetall(jobKey(baseRecord.jobId));
+    await repository.updateJob(baseRecord.jobId, { status: "completed" });
+    const hgetall = redis.hgetall;
+    redis.hgetall = async () => {
+      redis.hgetall = hgetall;
+      return staleRead;
+    };
+    await repository.updateJob(baseRecord.jobId, { progress: 40 });
+
+    expect(await repository.getJob(baseRecord.jobId)).toMatchObject({
+      status: "completed",
+      progress: 40,
+    });
+  });
+
+  it("round-trips the rendition ladder the plan stage chose", async () => {
+    const { redis } = createFakeRedis();
+    const repository = createJobsRepository({ redis, jobTtlSeconds: 60 });
+    const renditions = [
+      { name: "720p", width: 1280, height: 720, bandwidth: 2_800_000 },
+      { name: "360p", width: 640, height: 360, bandwidth: 800_000 },
+    ];
+
+    await repository.createJob(baseRecord);
+    await repository.updateJob(baseRecord.jobId, { renditions, renditionsExpected: 2 });
+
+    expect((await repository.getJob(baseRecord.jobId))?.renditions).toEqual(renditions);
+  });
+
+  it("counts a redelivered rendition once at the fan-out barrier", async () => {
+    const { redis } = createFakeRedis();
+    const repository = createJobsRepository({ redis, jobTtlSeconds: 60 });
+    await repository.createJob({ ...baseRecord, status: "processing", renditionsExpected: 3 });
+
+    await repository.completeRendition(baseRecord.jobId, "720p");
+    // Uploaded and tallied, then redelivered before the ack reached the broker.
+    expect(await repository.completeRendition(baseRecord.jobId, "720p")).toMatchObject({
+      done: 1,
+      expected: 3,
+    });
+
+    await repository.completeRendition(baseRecord.jobId, "360p");
+    const last = await repository.completeRendition(baseRecord.jobId, "1080p");
+
+    expect(last).toMatchObject({ done: 3, expected: 3 });
+    expect(last?.record.renditionsDone).toBe(3);
+  });
+
+  it("reports progress over the whole ladder, keeping 100 for uploaded renditions", async () => {
+    const { redis } = createFakeRedis();
+    const repository = createJobsRepository({ redis, jobTtlSeconds: 60 });
+    await repository.createJob({ ...baseRecord, status: "processing", renditionsExpected: 2 });
+
+    const record = await repository.reportRenditionProgress(baseRecord.jobId, "720p", 100);
+
+    // An encode tops out at 99, averaged with a rung that has not started.
+    expect(record).toMatchObject({ progress: 49, renditionsDone: 0 });
+  });
+
+  it("does not move a finished job's progress when a redelivered rendition restarts", async () => {
+    const { redis } = createFakeRedis();
+    const repository = createJobsRepository({ redis, jobTtlSeconds: 60 });
+    await repository.createJob({
+      ...baseRecord,
+      status: "completed",
+      progress: 100,
+      renditionsExpected: 1,
+    });
+
+    await repository.reportRenditionProgress(baseRecord.jobId, "720p", 3);
+
+    expect((await repository.getJob(baseRecord.jobId))?.progress).toBe(100);
+  });
 });

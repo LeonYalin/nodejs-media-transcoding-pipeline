@@ -15,7 +15,7 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 ## Component map
 - `src/api/` — `app.ts` (`createApp`, no listen), `index.ts` (entrypoint), `upload-service.ts` (the ingest orchestration), `routes/{uploads,jobs,health}.ts`, `sse.ts`.
 - `src/worker/` — `index.ts` (composition root + signals), `consumer.ts` (channel/prefetch/ack orchestration), `retry.ts` (pure retry-vs-park), `workspace.ts` (temp dirs), `handlers/{image,video-plan,video-rendition}.ts`.
-- `src/media/` — pure/near-pure media core: `ladder.ts` (rendition selection), `hls.ts` (master playlist), `ffmpeg.ts`, `images.ts`.
+- `src/media/` — pure/near-pure media core: `ladder.ts` (rendition selection), `hls.ts` (master playlist), `ffmpeg.ts` (probe parsing, HLS options, the fluent-ffmpeg calls). Image pipelines live inline in `worker/handlers/image.ts`.
 - `src/lib/` — `topology.ts` (the AMQP definition), `amqp`, `s3`, `object-repository` (the only S3 caller), `redis`, `jobs-repository` (the only Redis writer), `logger`, `metrics`, `metrics-server`, `tracing`.
 - `src/config/` — env → zod-validated typed config (the only place that reads `process.env`).
 - `src/domain/` — `job.ts` (wire + record schemas), `media.ts` (MIME allowlist, error classes).
@@ -35,6 +35,7 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 - **Verbs:** `createX` wires a collaborator and returns it; `connectX` awaits a network handshake and can throw; `start`/`stop` drive a running resource; `assert` is idempotent setup I/O; `build`/`is` stay pure. Choose the verb for what the call can do to you, not for uniformity.
 - **Naming:** collaborators carry their role suffix in variable names and dep keys — `uploadService`, `jobsRepository`, `objectRepository`, `jobPublisher` — so the layer is visible at every call site. Never "store".
 - **Dependency injection:** modules export `createX(deps)` factories — a dep object, or a single positional collaborator when there is exactly one (`createObjectRepository(client)`). Entrypoints are the only place that builds real clients and the only place with import-time side effects (guarded by `import.meta.url === pathToFileURL(process.argv[1]).href`). Config is the one deliberate singleton.
+- **Readability:** straight-line code over clever structure. Create a resource and release it in `try/finally` — no callback wrappers (`withX(fn)`). Two or three similar steps are written out by name — no table + `.map`. No listener/flag machinery for rare failures: fix a shared failure mode once in the lower module (e.g. `putStream`), not in every caller, and prefer a simple existing rule (retry, then park) over classifying edge cases.
 - **Tests:** no module mocking (`vi.mock` must stay at zero) — inject a fake, or use a real container. Fakes only for what a real dependency can't do (failure injection, timer control).
 - Env vars load via Node `--env-file=.env` (no `dotenv`).
 

@@ -4,9 +4,14 @@ import {
   type ConfirmChannel,
   type RecoveringChannelModel,
 } from "amqplib";
-import { JobMessageSchema, type JobMessage } from "../domain/job.js";
+import type { z } from "zod";
+import {
+  ImageJobMessageSchema,
+  VideoJobMessageSchema,
+  VideoRenditionJobMessageSchema,
+} from "../domain/job.js";
 import { logger } from "./logger.js";
-import { EXCHANGES, assertTopology } from "./topology.js";
+import { EXCHANGES, ROUTING_KEYS, assertTopology } from "./topology.js";
 
 export interface AmqpSettings {
   url: string;
@@ -126,6 +131,21 @@ export interface JobPublisherDeps {
 }
 
 /**
+ * The wire schema each routing key carries. Parsing a rendition with the plain
+ * video schema would silently strip its `rendition` as an unknown key.
+ */
+const MESSAGE_SCHEMA_BY_ROUTING_KEY = {
+  [ROUTING_KEYS.IMAGE_TRANSFORM]: ImageJobMessageSchema,
+  [ROUTING_KEYS.VIDEO_PLAN]: VideoJobMessageSchema,
+  [ROUTING_KEYS.VIDEO_RENDITION]: VideoRenditionJobMessageSchema,
+} as const;
+
+export type JobRoutingKey = keyof typeof MESSAGE_SCHEMA_BY_ROUTING_KEY;
+export type JobMessageFor<K extends JobRoutingKey> = z.infer<
+  (typeof MESSAGE_SCHEMA_BY_ROUTING_KEY)[K]
+>;
+
+/**
  * Publishes job messages durably and resolves only once the broker has confirmed
  * the message. The API awaits this before replying 202, so a client is never
  * told "accepted" for work the broker did not take.
@@ -139,10 +159,15 @@ export function createJobPublisher({
   channelProvider,
   exchange = EXCHANGES.JOBS,
 }: JobPublisherDeps) {
-  async function publish(routingKey: string, message: JobMessage): Promise<void> {
+  async function publish<K extends JobRoutingKey>(
+    routingKey: K,
+    message: JobMessageFor<K>,
+  ): Promise<void> {
     // Parse on the way out: the wire contract is enforced here, once, rather
-    // than trusted at three call sites.
-    const payload = Buffer.from(JSON.stringify(JobMessageSchema.parse(message)));
+    // than trusted at every call site -- and against the schema of the queue
+    // the routing key actually lands on.
+    const schema = MESSAGE_SCHEMA_BY_ROUTING_KEY[routingKey];
+    const payload = Buffer.from(JSON.stringify(schema.parse(message)));
     const channel = await channelProvider.get();
 
     await new Promise<void>((resolve, reject) => {

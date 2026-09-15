@@ -64,9 +64,13 @@ export function createObjectRepository(client: S3Client) {
       bytes = total;
     });
 
-    // `.pipe` does not forward errors, and an aborted request must not leave
-    // `Upload` waiting on a source that will never end.
+    // `.pipe` forwards neither errors nor an early close, and either one would
+    // leave `Upload` waiting on a source that will never end: an aborted
+    // request, or a caller abandoning this upload after its sibling failed.
     body.on("error", (error) => counter.destroy(error));
+    body.on("close", () => {
+      if (!body.readableEnded) counter.destroy(new Error("Upload body closed before it ended"));
+    });
     body.pipe(counter);
 
     // lib-storage streams the body as a multipart upload, so memory stays at

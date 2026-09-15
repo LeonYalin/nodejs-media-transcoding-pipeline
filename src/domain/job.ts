@@ -60,6 +60,8 @@ export const JobRecordSchema = z.object({
   progress: z.number().min(0).max(100),
   error: z.string().optional(),
   outputs: z.array(z.string()).optional(),
+  /** The ladder the plan stage chose; the last rendition builds the master playlist from it. */
+  renditions: z.array(RenditionSchema).optional(),
   renditionsExpected: z.number().int().nonnegative().optional(),
   renditionsDone: z.number().int().nonnegative().optional(),
 });

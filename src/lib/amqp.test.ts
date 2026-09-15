@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import type { ConfirmChannel } from "amqplib";
 import { describe, expect, it } from "vitest";
-import type { JobMessage } from "../domain/job.js";
-import { createConfirmChannelProvider, createJobPublisher } from "./amqp.js";
+import type { VideoJobMessage } from "../domain/job.js";
+import { createConfirmChannelProvider, createJobPublisher, type JobMessageFor } from "./amqp.js";
 import { EXCHANGES, ROUTING_KEYS } from "./topology.js";
 
 interface Published {
@@ -72,7 +72,7 @@ function createFakeSource() {
   };
 }
 
-const message: JobMessage = {
+const message: VideoJobMessage = {
   jobId: "11111111-1111-4111-8111-111111111111",
   type: "video",
   sourceKey: "11111111-1111-4111-8111-111111111111/source.mp4",
@@ -174,9 +174,7 @@ describe("createJobPublisher", () => {
     await provider.get();
     created[0].confirmError = new Error("basic.nack");
 
-    await expect(publisher.publish(ROUTING_KEYS.IMAGE_TRANSFORM, message)).rejects.toThrow(
-      "basic.nack",
-    );
+    await expect(publisher.publish(ROUTING_KEYS.VIDEO_PLAN, message)).rejects.toThrow("basic.nack");
   });
 
   it("still awaits the confirm when the write buffer is full", async () => {
@@ -195,8 +193,30 @@ describe("createJobPublisher", () => {
     const provider = createConfirmChannelProvider(source);
     const publisher = createJobPublisher({ channelProvider: provider });
 
-    const invalid = { ...message, mime: "application/zip" } as unknown as JobMessage;
+    const invalid = { ...message, mime: "application/zip" } as unknown as VideoJobMessage;
 
     await expect(publisher.publish(ROUTING_KEYS.VIDEO_PLAN, invalid)).rejects.toThrow();
+  });
+
+  it("keeps a rendition's rung, which the plain video schema would strip", async () => {
+    const { source, created } = createFakeSource();
+    const provider = createConfirmChannelProvider(source);
+    const publisher = createJobPublisher({ channelProvider: provider });
+    const rendition = { name: "720p", width: 1280, height: 720, bandwidth: 2_800_000 };
+
+    await publisher.publish(ROUTING_KEYS.VIDEO_RENDITION, { ...message, type: "video", rendition });
+
+    expect(JSON.parse(created[0].published[0].content.toString())).toMatchObject({ rendition });
+  });
+
+  it("refuses a message whose type does not match the routing key's queue", async () => {
+    const { source } = createFakeSource();
+    const provider = createConfirmChannelProvider(source);
+    const publisher = createJobPublisher({ channelProvider: provider });
+
+    // A video on the image queue would only be parked by the worker; fail it here instead.
+    const mismatched = message as unknown as JobMessageFor<typeof ROUTING_KEYS.IMAGE_TRANSFORM>;
+
+    await expect(publisher.publish(ROUTING_KEYS.IMAGE_TRANSFORM, mismatched)).rejects.toThrow();
   });
 });
