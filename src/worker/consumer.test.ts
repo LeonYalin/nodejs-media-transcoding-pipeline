@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ConfirmChannel, ConsumeMessage, MessagePropertyHeaders, Options } from "amqplib";
 import { describe, expect, it } from "vitest";
 import { CorruptMediaError } from "../domain/media.js";
+import { mediaMetrics } from "../lib/metrics.js";
 import { EXCHANGES, QUEUES, ROUTING_KEYS } from "../lib/topology.js";
 import { createJobConsumer, type ConsumerChannel, type JobHandlers } from "./consumer.js";
 
@@ -164,6 +165,25 @@ async function build({ maxAttempts = 3 } = {}) {
   };
 }
 
+/**
+ * The registry is a process-wide singleton, so every assertion is a delta
+ * against the value this test started from -- never an absolute count.
+ */
+interface ReadableMetric {
+  get(): Promise<{ values: { labels: Partial<Record<string, string | number>>; value: number }[] }>;
+}
+
+async function metricValue(
+  metric: ReadableMetric,
+  labels: Record<string, string> = {},
+): Promise<number> {
+  const { values } = await metric.get();
+  const match = values.find((sample) =>
+    Object.entries(labels).every(([key, value]) => sample.labels[key] === value),
+  );
+  return match?.value ?? 0;
+}
+
 describe("createJobConsumer", () => {
   it("shares one channel-wide prefetch slot across all three work queues", async () => {
     const { fake } = await build();
@@ -303,6 +323,55 @@ describe("createJobConsumer", () => {
     await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
 
     expect(fake.acked).toHaveLength(0);
+  });
+
+  it("counts a completed stage, times it, and leaves the busy gauge at rest", async () => {
+    const { fake } = await build();
+    const before = await metricValue(mediaMetrics.jobsTotal, {
+      type: "image",
+      status: "completed",
+    });
+    const timedBefore = await metricValue(mediaMetrics.transcodeDuration, {
+      type: "image",
+      rendition: "image",
+    });
+
+    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+
+    expect(await metricValue(mediaMetrics.jobsTotal, { type: "image", status: "completed" })).toBe(
+      before + 1,
+    );
+    // The `rendition` label comes back from the handler, so a timed sample here
+    // proves the parse-then-label path stayed connected.
+    expect(
+      await metricValue(mediaMetrics.transcodeDuration, { type: "image", rendition: "image" }),
+    ).toBeGreaterThan(timedBefore);
+    expect(await metricValue(mediaMetrics.workerBusy)).toBe(0);
+  });
+
+  it("counts a retry and a park under the queue that failed", async () => {
+    const { fake, handlers } = await build();
+    const retriesBefore = await metricValue(mediaMetrics.retriesTotal, { queue: QUEUES.IMAGE });
+    const parksBefore = await metricValue(mediaMetrics.parkedTotal, {
+      queue: QUEUES.IMAGE,
+      reason: "non-retryable",
+    });
+
+    handlers.failWith(new Error("minio timeout"));
+    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    handlers.failWith(new CorruptMediaError("bad moov atom"));
+    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+
+    expect(await metricValue(mediaMetrics.retriesTotal, { queue: QUEUES.IMAGE })).toBe(
+      retriesBefore + 1,
+    );
+    expect(
+      await metricValue(mediaMetrics.parkedTotal, {
+        queue: QUEUES.IMAGE,
+        reason: "non-retryable",
+      }),
+    ).toBe(parksBefore + 1);
+    expect(await metricValue(mediaMetrics.workerBusy)).toBe(0);
   });
 
   it("stop cancels every consumer, then waits for the in-flight job to ack", async () => {

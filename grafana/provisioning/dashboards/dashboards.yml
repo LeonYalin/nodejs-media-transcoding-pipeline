@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: media-pipeline
+    folder: Media pipeline
+    type: file
+    # The dashboards are the repo's, not the UI's: edits made in Grafana are
+    # discarded on reload rather than drifting away from version control.
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

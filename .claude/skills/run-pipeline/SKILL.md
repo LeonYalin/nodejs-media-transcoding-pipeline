@@ -42,6 +42,7 @@ Mount a host file to inspect it: add `-v "$PWD/fixtures:/fixtures"` and point at
 - MinIO console: `http://localhost:9001` · S3 endpoint `http://localhost:9000`
 - RedisInsight: `http://localhost:5540`
 - Prometheus: `http://localhost:9090` · Grafana: `http://localhost:3001` (admin/admin) · Jaeger: `http://localhost:16686`
+- Grafana auto-provisions two dashboards in the "Media pipeline" folder: **Media pipeline** (`/d/media-pipeline`, is it keeping up?) and **Media runtime health** (`/d/media-runtime`, per-instance Node internals). They are read-only — edit the JSON under `grafana/provisioning/dashboards/`.
 - Worker metrics are scraped by Prometheus via DNS discovery; they are not published on host ports.
 
 ## Shutdown

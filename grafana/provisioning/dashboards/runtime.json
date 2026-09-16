@@ -1,0 +1,158 @@
+{
+  "uid": "media-runtime",
+  "title": "Media runtime health",
+  "description": "Why is it slow, and is any process unhealthy? Per-instance Node.js internals from collectDefaultMetrics.",
+  "tags": ["media"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "links": [
+    {
+      "type": "link",
+      "title": "Pipeline",
+      "url": "/d/media-pipeline",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(nodejs_eventloop_lag_p99_seconds{job=~\"api|worker\"}, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Event-loop lag p99, per instance",
+      "description": "The tail, not the mean: a loop blocked for 200 ms once a second barely moves the average.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job, instance) (nodejs_eventloop_lag_p99_seconds{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "{{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap used vs. resident memory",
+      "description": "RSS far above the heap is native memory -- libvips buffers and ffmpeg's child, which is expected. Both climbing together is a leak.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job, instance) (nodejs_heap_size_used_bytes{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "heap {{job}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (job, instance) (process_resident_memory_bytes{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "rss {{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "GC pause time",
+      "description": "Share of each second spent in GC. Every pause is time the event loop is not running.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job, instance, kind) (rate(nodejs_gc_duration_seconds_sum{job=~\"api|worker\", instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}} {{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU usage (Node process only)",
+      "description": "100% = one core. ffmpeg runs as a child process and is not counted here, so a transcoding worker can be pegged while this stays low.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job, instance) (rate(process_cpu_seconds_total{job=~\"api|worker\", instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Active handles and requests",
+      "description": "Handles that only ever grow are sockets or streams nobody closed -- SSE connections and S3 uploads both show up here.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job, instance) (nodejs_active_handles_total{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "handles {{job}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (job, instance) (nodejs_active_requests_total{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "requests {{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process uptime and restarts",
+      "description": "Uptime sawtoothing means the process is restarting: the worker exits when its AMQP channel dies, so a repeating pattern points at the broker. Restarts only count a process that comes back on the same instance address.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0 },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "unit", "value": "short" },
+              { "id": "decimals", "value": 0 },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max by (job, instance) (process_start_time_seconds{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "uptime {{job}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (job, instance) (changes(process_start_time_seconds{job=~\"api|worker\", instance=~\"$instance\"}[1h]))",
+          "legendFormat": "restarts in last 1h {{job}} {{instance}}"
+        }
+      ]
+    }
+  ]
+}

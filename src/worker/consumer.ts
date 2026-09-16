@@ -11,8 +11,16 @@ import {
 import { InvalidJobMessageError } from "../domain/media.js";
 import type { JobsRepository } from "../lib/jobs-repository.js";
 import { logger } from "../lib/logger.js";
+import { mediaMetrics } from "../lib/metrics.js";
 import { EXCHANGES, QUEUES } from "../lib/topology.js";
 import { decideRetry } from "./retry.js";
+
+/** The `type` label on every worker metric; the delivering queue decides it. */
+const MEDIA_TYPE_BY_QUEUE: Record<string, "image" | "video"> = {
+  [QUEUES.IMAGE]: "image",
+  [QUEUES.VIDEO_PLAN]: "video",
+  [QUEUES.VIDEO_RENDITION]: "video",
+};
 
 /**
  * The slice of amqplib's ConfirmChannel the consumer uses, declared structurally
@@ -80,13 +88,22 @@ export function createJobConsumer({
   prefetch = 1,
 }: JobConsumerDeps) {
   // The payload carries no stage discriminator (see domain/job.ts): the
-  // delivering queue decides the schema.
-  const handlerByQueue: Record<string, (content: Buffer) => Promise<void>> = {
-    [QUEUES.IMAGE]: (content) => jobHandlers.image(parseBody(ImageJobMessageSchema, content)),
-    [QUEUES.VIDEO_PLAN]: (content) =>
-      jobHandlers.videoPlan(parseBody(VideoJobMessageSchema, content)),
-    [QUEUES.VIDEO_RENDITION]: (content) =>
-      jobHandlers.videoRendition(parseBody(VideoRenditionJobMessageSchema, content)),
+  // delivering queue decides the schema. Each returns the `rendition` label for
+  // media_transcode_duration_seconds, which only the parsed body can name.
+  const handlerByQueue: Record<string, (content: Buffer) => Promise<string>> = {
+    [QUEUES.IMAGE]: async (content) => {
+      await jobHandlers.image(parseBody(ImageJobMessageSchema, content));
+      return "image";
+    },
+    [QUEUES.VIDEO_PLAN]: async (content) => {
+      await jobHandlers.videoPlan(parseBody(VideoJobMessageSchema, content));
+      return "plan";
+    },
+    [QUEUES.VIDEO_RENDITION]: async (content) => {
+      const message = parseBody(VideoRenditionJobMessageSchema, content);
+      await jobHandlers.videoRendition(message);
+      return message.rendition.name;
+    },
   };
 
   const consumerTags: string[] = [];
@@ -132,6 +149,7 @@ export function createJobConsumer({
 
     if (decision.action === "retry") {
       log.warn({ err: error }, "Job failed; retrying after delay");
+      mediaMetrics.retriesTotal.inc({ queue });
       // requeue:false dead-letters into media.retry. requeue:true would spin the
       // same failure straight back, with no delay and no attempt count.
       channel.nack(message, false, false);
@@ -139,13 +157,24 @@ export function createJobConsumer({
     }
 
     log.error({ err: error }, "Job parked");
+    mediaMetrics.parkedTotal.inc({ queue, reason: decision.reason });
+    mediaMetrics.jobsTotal.inc({ type: MEDIA_TYPE_BY_QUEUE[queue], status: "failed" });
     const reason = error instanceof Error ? error.message : String(error);
     await park(message, queue, `${decision.reason}: ${reason}`);
   }
 
   async function handleDelivery(queue: string, message: ConsumeMessage): Promise<void> {
+    const type = MEDIA_TYPE_BY_QUEUE[queue];
+    // Gauge, not a flag: at prefetch 1 this is the 0/1 the dashboard reads, and
+    // it still tells the truth if the limit is ever raised.
+    mediaMetrics.workerBusy.inc();
+    const stopTimer = mediaMetrics.transcodeDuration.startTimer({ type });
+
     try {
-      await handlerByQueue[queue](message.content);
+      // Timed only on success: a failure's duration is the time to the error,
+      // which would drag the encode percentiles down.
+      stopTimer({ rendition: await handlerByQueue[queue](message.content) });
+      mediaMetrics.jobsTotal.inc({ type, status: "completed" });
       channel.ack(message);
     } catch (error) {
       await settleFailure(message, queue, error).catch((settleError: unknown) => {
@@ -154,6 +183,8 @@ export function createJobConsumer({
         // keys make the rerun overwrite rather than duplicate.
         logger.error({ err: settleError, queue }, "Could not settle delivery");
       });
+    } finally {
+      mediaMetrics.workerBusy.dec();
     }
   }
 

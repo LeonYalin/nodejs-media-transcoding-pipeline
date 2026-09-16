@@ -48,7 +48,9 @@ export const mediaMetrics = {
   // Jobs (worker)
   jobsTotal: new client.Counter({
     name: "media_jobs_total",
-    help: "Jobs finishing, by media type and terminal status",
+    // One per *stage*, not per upload: a video counts its plan and each rung,
+    // because that is what a worker settles.
+    help: "Job stages finishing, by media type and terminal status",
     labelNames: ["type", "status"],
     registers: [registry],
   }),
@@ -64,7 +66,7 @@ export const mediaMetrics = {
 
   workerBusy: new client.Gauge({
     name: "media_worker_busy",
-    help: "1 while this worker holds an unacked job, 0 when idle",
+    help: "Deliveries this worker is processing -- 1 while busy, 0 when idle, at prefetch 1",
     registers: [registry],
   }),
 

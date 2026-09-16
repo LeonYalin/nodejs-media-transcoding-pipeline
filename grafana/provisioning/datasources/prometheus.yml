@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Fixed uid: both dashboards reference it by uid, so a re-provisioned
+    # datasource must not come back under a generated one.
+    uid: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches prometheus.yml's scrape_interval, so Grafana's $__rate_interval
+      # never asks for a window shorter than the data.
+      timeInterval: 5s

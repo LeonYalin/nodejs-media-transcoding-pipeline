@@ -342,8 +342,7 @@ Deviations from the text above, each for a stated reason:
 - **ffmpeg details** (`media/ffmpeg.ts`): probe dimensions honour rotation metadata, since ffmpeg auto-rotates portrait phone video; keyframes are forced on the segment clock with `-sc_threshold 0`, so every rung cuts at the same instants; `-level:v` comes from `hls.ts`, so the encoded level matches the advertised `CODECS`; the poster is taken at `min(1 s, duration / 2)`.
 - **The video path has not yet run end-to-end** (Verification §4–6, via `transcode-verifier`). ffmpeg does not run on the host, so the video handlers are unit-tested only through `parseProbe` / `buildHlsOutputOptions` and the repository barrier. The image handler runs against real sharp.
 
-### 10. Observability
-*Already in place:* `lib/metrics.ts` declares every metric below (only the API's upload metrics are recorded so far), `lib/metrics-server.ts` serves the workers' `/metrics`, `prometheus/prometheus.yml` has all three scrape jobs, and `lib/tracing.ts` is imported first in both entrypoints. *Missing:* recording the worker metrics, the Grafana datasource + dashboards, and the trace-continuity check.
+### 10. Observability — DONE
 - `prom-client`: `media_jobs_total{type,status}`, `media_transcode_duration_seconds{type,rendition}`, `media_upload_bytes`, `media_retries_total{queue}`, `media_parked_total{queue,reason}`, `media_worker_busy`, plus default metrics (incl. event-loop lag).
 - `prometheus.yml` scrapes: the host API via `host.docker.internal`, RabbitMQ's own `:15692/metrics`, and worker replicas via `dns_sd_configs: [{ names: [worker], type: A, port: <WORKER_METRICS_PORT> }]`.
 - **Two Grafana dashboards, not one** — split by the question each answers, which is the standard overview→drill-down pattern:
@@ -354,6 +353,15 @@ Deviations from the text above, each for a stated reason:
 - **Aggregation rule for scaled workers:** default metrics are per-instance, so `sum()` across replicas hides a single sick one. Use `max by (instance)` / per-instance series for lag, heap and RSS; reserve `sum()` for genuinely additive work counters. The `job` label separates the host API from the worker replicas.
 - Use `nodejs_eventloop_lag_p99_seconds` rather than the mean `nodejs_eventloop_lag_seconds` — a blocked loop shows up in the tail long before the average moves.
 - `lib/tracing.ts`: `NodeSDK` with the http/fastify/amqplib/ioredis/aws-sdk instrumentations and an OTLP/HTTP exporter → Jaeger. **Imported first** in both entrypoints (before any instrumented library). Acceptance check: one Jaeger trace contains the API span *and* the worker's ffmpeg span — proving the amqplib instrumentation propagated context through the message headers.
+
+Deviations from the text above, each for a stated reason:
+- **The worker's metrics are recorded in `consumer.ts`, not in the handlers.** It is the one place that already knows the queue, the settlement decision and the delivery's start and end, so the handlers stay free of instrumentation. The `rendition` label is the exception that shapes the code: only the parsed body names a rung, so each entry in `handlerByQueue` now *returns* its stage label (`image`, `plan`, or the rendition name) and the consumer supplies it when it stops the timer.
+- **`media_jobs_total` counts stages, not uploads.** A video increments it once for its plan and once per rung, because a stage is what a worker settles. The help text and the dashboard panel both say so rather than implying an upload count.
+- **`media_worker_busy` is incremented/decremented, not set to 1/0.** At `prefetch(1)` the two are identical; the gauge keeps telling the truth if the prefetch is ever raised.
+- **Only successful stages are timed.** A failure's duration is the time to the error, which would drag the encode percentiles toward zero and hide a slow ladder.
+- **Queue depth needs a second scrape job.** RabbitMQ's `/metrics` aggregates every queue into one series, which cannot answer "which queue is backed up", so `rabbitmq-queues` scrapes `/metrics/detailed?family=queue_coarse_metrics` for the per-queue split. Only the coarse family, so it stays cheap at a 5 s interval.
+- **No manual ffmpeg span.** The amqplib instrumentation makes the consume span the active context for the whole handler, so the S3 and Redis spans inside a transcode already hang off the API's trace. Adding a hand-rolled span would prove nothing the propagation does not.
+- **The trace-continuity check has not been run** — it needs the stack up (Verification §8), like the video path from step 9.
 
 ### 11. Reliability
 - **Graceful shutdown:** SIGTERM → `ch.cancel(consumerTag)` for all three consumers (stop new deliveries), await the in-flight job, ack it, close channel + connection, flush the tracer, exit 0. A second signal kills the ffmpeg child immediately. *(In place since step 9: `worker/index.ts` cancels, drains, closes and flushes. Still missing: a second signal exits the process without explicitly killing the ffmpeg child.)*

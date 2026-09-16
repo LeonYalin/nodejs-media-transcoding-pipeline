@@ -7,6 +7,16 @@ scrape_configs:
     static_configs:
       - targets: ["rabbitmq:15692"]
 
+  # The aggregated endpoint above sums every queue into one series, which cannot
+  # answer "which queue is backed up". This one returns the same counters split
+  # by queue; only the cheap coarse family, so it stays safe to scrape at 5s.
+  - job_name: "rabbitmq-queues"
+    metrics_path: "/metrics/detailed"
+    params:
+      family: ["queue_coarse_metrics"]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
   - job_name: "api"
     static_configs:
       - targets: ["host.docker.internal:3000"]

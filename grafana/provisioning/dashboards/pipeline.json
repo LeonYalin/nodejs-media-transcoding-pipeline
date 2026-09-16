@@ -1,0 +1,221 @@
+{
+  "uid": "media-pipeline",
+  "title": "Media pipeline",
+  "description": "Is the pipeline keeping up? Queue depth, throughput, transcode latency, retries and parks.",
+  "tags": ["media"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "links": [
+    {
+      "type": "link",
+      "title": "Runtime health",
+      "url": "/d/media-runtime",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(nodejs_eventloop_lag_p99_seconds{job=~\"api|worker\"}, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Queue depth (ready messages)",
+      "description": "Per queue, from RabbitMQ's own exporter. q.retry oscillating is the retry path working; q.parked only grows.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (queue) (rabbitmq_detailed_queue_messages_ready{queue=~\"q\\\\..*\"})",
+          "legendFormat": "{{queue}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Job stages per minute, by status",
+      "description": "One stage per settled delivery: an image is one, a video is its plan plus one per ladder rung.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type, status) (rate(media_jobs_total[$__rate_interval])) * 60",
+          "legendFormat": "{{type}} {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Transcode duration by rendition (p50 / p95)",
+      "description": "Wall-clock per successful stage, including the source download and the derivative upload.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, rendition) (rate(media_transcode_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{rendition}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, rendition) (rate(media_transcode_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{rendition}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries and parks per minute",
+      "description": "Retries are messages nacked into the TTL delay queue; parks are terminal.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (queue) (rate(media_retries_total[$__rate_interval])) * 60",
+          "legendFormat": "retry {{queue}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (queue, reason) (rate(media_parked_total[$__rate_interval])) * 60",
+          "legendFormat": "park {{queue}} ({{reason}})"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker busy ratio",
+      "description": "Mean of media_worker_busy across replicas. At prefetch 1 this is the fraction of workers holding a job: sustained 100% with a growing queue means scale out.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg(media_worker_busy{job=\"worker\"})",
+          "legendFormat": "busy replicas"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ingest: upload throughput and confirm latency",
+      "description": "Publisher-confirm p99 is what a client waits on before its 202, so it is the API's real latency budget. Two units, two axes.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "Bps", "min": 0 },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(media_upload_bytes_sum{job=\"api\"}[$__rate_interval]))",
+          "legendFormat": "accepted bytes/s"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(media_publish_confirm_duration_seconds_bucket{job=\"api\"}[$__rate_interval])))",
+          "legendFormat": "confirm p99"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Runtime health (the two claims this project makes)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Event-loop lag p99, per instance",
+      "description": "Flat under load is the proof that sharp and ffmpeg never block the loop. Per instance, never summed: one sick replica must stay visible. Click a series to open that instance on the runtime dashboard.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "links": [
+            {
+              "title": "Runtime health for ${__field.labels.instance}",
+              "url": "/d/media-runtime?var-instance=${__field.labels.instance}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job, instance) (nodejs_eventloop_lag_p99_seconds{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "{{job}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Resident memory, per instance",
+      "description": "Flat regardless of upload size is the proof that no media file is ever buffered. Click a series to open that instance on the runtime dashboard.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "links": [
+            {
+              "title": "Runtime health for ${__field.labels.instance}",
+              "url": "/d/media-runtime?var-instance=${__field.labels.instance}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job, instance) (process_resident_memory_bytes{job=~\"api|worker\", instance=~\"$instance\"})",
+          "legendFormat": "{{job}} {{instance}}"
+        }
+      ]
+    }
+  ]
+}
