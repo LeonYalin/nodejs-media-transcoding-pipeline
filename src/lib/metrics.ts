@@ -74,14 +74,14 @@ export const mediaMetrics = {
   retriesTotal: new client.Counter({
     name: "media_retries_total",
     help: "Messages nacked into the retry delay queue",
-    labelNames: ["queue"],
+    labelNames: ["routing_key"],
     registers: [registry],
   }),
 
   parkedTotal: new client.Counter({
     name: "media_parked_total",
     help: "Messages routed to the terminal parked queue",
-    labelNames: ["queue", "reason"],
+    labelNames: ["routing_key", "reason"],
     registers: [registry],
   }),
 };

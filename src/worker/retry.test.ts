@@ -14,15 +14,15 @@ function rejectedTimes(count: number): DeathHeaders {
   return {
     "x-death": [
       { queue: QUEUES.RETRY, reason: "expired", count },
-      { queue: QUEUES.IMAGE, reason: "rejected", count },
+      { queue: QUEUES.WORK, reason: "rejected", count },
     ],
   };
 }
 
 describe("countRejections", () => {
   it("is 0 for a message that has never been dead-lettered", () => {
-    expect(countRejections(undefined, QUEUES.IMAGE)).toBe(0);
-    expect(countRejections({}, QUEUES.IMAGE)).toBe(0);
+    expect(countRejections(undefined, QUEUES.WORK)).toBe(0);
+    expect(countRejections({}, QUEUES.WORK)).toBe(0);
   });
 
   it("reads this queue's rejected entry, not x-death[0]", () => {
@@ -30,27 +30,27 @@ describe("countRejections", () => {
     const headers: DeathHeaders = {
       "x-death": [
         { queue: QUEUES.RETRY, reason: "expired", count: 7 },
-        { queue: QUEUES.IMAGE, reason: "rejected", count: 2 },
+        { queue: QUEUES.WORK, reason: "rejected", count: 2 },
       ],
     };
 
-    expect(countRejections(headers, QUEUES.IMAGE)).toBe(2);
+    expect(countRejections(headers, QUEUES.WORK)).toBe(2);
   });
 
   it("ignores rejections recorded against another queue", () => {
     const headers: DeathHeaders = {
-      "x-death": [{ queue: QUEUES.VIDEO_PLAN, reason: "rejected", count: 2 }],
+      "x-death": [{ queue: "q.other", reason: "rejected", count: 2 }],
     };
 
-    expect(countRejections(headers, QUEUES.VIDEO_RENDITION)).toBe(0);
+    expect(countRejections(headers, QUEUES.WORK)).toBe(0);
   });
 
   it("ignores this queue's entries for reasons other than rejection", () => {
     const headers: DeathHeaders = {
-      "x-death": [{ queue: QUEUES.IMAGE, reason: "maxlen", count: 4 }],
+      "x-death": [{ queue: QUEUES.WORK, reason: "maxlen", count: 4 }],
     };
 
-    expect(countRejections(headers, QUEUES.IMAGE)).toBe(0);
+    expect(countRejections(headers, QUEUES.WORK)).toBe(0);
   });
 });
 
@@ -63,7 +63,7 @@ describe("decideRetry", () => {
     const decision = decideRetry({
       error: transient,
       headers: row.rejections === 0 ? undefined : rejectedTimes(row.rejections),
-      queue: QUEUES.IMAGE,
+      queue: QUEUES.WORK,
       maxAttempts: 3,
     });
 
@@ -76,9 +76,11 @@ describe("decideRetry", () => {
     new ObjectNotFoundError("gone"),
     new InvalidJobMessageError("not json"),
   ])("parks $name on the first attempt", (error) => {
-    expect(decideRetry({ error, headers: undefined, queue: QUEUES.IMAGE, maxAttempts: 3 })).toEqual(
-      { action: "park", attempt: 1, reason: "non-retryable" },
-    );
+    expect(decideRetry({ error, headers: undefined, queue: QUEUES.WORK, maxAttempts: 3 })).toEqual({
+      action: "park",
+      attempt: 1,
+      reason: "non-retryable",
+    });
   });
 
   it("reports non-retryable over max-attempts when both apply", () => {
@@ -86,7 +88,7 @@ describe("decideRetry", () => {
       decideRetry({
         error: new CorruptMediaError("bad"),
         headers: rejectedTimes(2),
-        queue: QUEUES.IMAGE,
+        queue: QUEUES.WORK,
         maxAttempts: 3,
       }),
     ).toMatchObject({ action: "park", reason: "non-retryable" });
@@ -94,8 +96,35 @@ describe("decideRetry", () => {
 
   it("parks the first failure when MAX_ATTEMPTS is 1", () => {
     expect(
-      decideRetry({ error: transient, headers: undefined, queue: QUEUES.IMAGE, maxAttempts: 1 }),
+      decideRetry({ error: transient, headers: undefined, queue: QUEUES.WORK, maxAttempts: 1 }),
     ).toEqual({ action: "park", attempt: 1, reason: "max-attempts" });
+  });
+
+  it("counts a crashed worker's lost delivery as an attempt", () => {
+    expect(
+      decideRetry({
+        error: transient,
+        headers: { "x-delivery-count": 1 },
+        queue: QUEUES.WORK,
+        maxAttempts: 3,
+      }),
+    ).toEqual({ action: "retry", attempt: 2 });
+  });
+
+  it("adds crashes to rejections -- the header shape observed on a live quorum queue", () => {
+    const headers: DeathHeaders = {
+      "x-death": [
+        { queue: QUEUES.RETRY, reason: "expired", count: 1 },
+        { queue: QUEUES.WORK, reason: "rejected", count: 1 },
+      ],
+      "x-delivery-count": 1,
+    };
+
+    expect(decideRetry({ error: transient, headers, queue: QUEUES.WORK, maxAttempts: 3 })).toEqual({
+      action: "park",
+      attempt: 3,
+      reason: "max-attempts",
+    });
   });
 
   it("treats a thrown non-Error as transient", () => {
@@ -103,7 +132,7 @@ describe("decideRetry", () => {
       decideRetry({
         error: "socket hang up",
         headers: undefined,
-        queue: QUEUES.IMAGE,
+        queue: QUEUES.WORK,
         maxAttempts: 3,
       }),
     ).toEqual({ action: "retry", attempt: 1 });

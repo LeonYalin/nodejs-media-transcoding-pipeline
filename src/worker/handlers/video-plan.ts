@@ -16,6 +16,8 @@ export interface VideoPlanHandlerDeps {
   jobPublisher: Pick<JobPublisher, "publish">;
   uploadsBucket: string;
   outputsBucket: string;
+  /** Aborted by the worker's second shutdown signal: kills a running ffmpeg. */
+  abortSignal: AbortSignal;
 }
 
 /**
@@ -29,6 +31,7 @@ export function createVideoPlanHandler({
   jobPublisher,
   uploadsBucket,
   outputsBucket,
+  abortSignal,
 }: VideoPlanHandlerDeps) {
   return async function handleVideoPlan(message: VideoJobMessage): Promise<void> {
     const { jobId, sourceKey } = message;
@@ -49,7 +52,12 @@ export function createVideoPlanHandler({
       // 1 s in, as specified -- or halfway through a clip shorter than 2 s,
       // where a fixed 1 s seek would land past the last frame.
       const posterPath = path.join(workspace.path, "poster.jpg");
-      await extractPoster(sourcePath, posterPath, Math.min(1, probe.durationInSeconds / 2));
+      await extractPoster(
+        sourcePath,
+        posterPath,
+        Math.min(1, probe.durationInSeconds / 2),
+        abortSignal,
+      );
       await objectRepository.putStream({
         bucket: outputsBucket,
         key: `${jobId}/poster.jpg`,

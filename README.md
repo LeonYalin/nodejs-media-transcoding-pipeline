@@ -42,12 +42,13 @@ storage forever.
 
 Transcoding is CPU-bound and happens in native code (libvips for images, an ffmpeg child
 process for video), so `worker_threads` buy little. What actually scales is more processes.
-*   **The Instrument:** `docker compose up --scale worker=N` + AMQP `prefetch(1, true)`.
-*   **The Method:** each worker container opens one channel with a **channel-global** prefetch
-    of 1, so it holds exactly one unacknowledged job at a time. Concurrency is therefore
-    exactly the replica count — set it to your core count and every core saturates, while the
-    queue absorbs everything else. The `global` flag is load-bearing: without it each of the
-    three consumers gets its own slot and one container quietly runs three jobs at once.
+*   **The Instrument:** `docker compose up --scale worker=N` + AMQP `prefetch(1)`.
+*   **The Method:** every stage (image, video plan, video rendition) lands on **one** work
+    queue, `q.work`, and each worker container runs a single consumer on it with a prefetch of
+    1, so it holds exactly one unacknowledged job at a time. Concurrency is therefore exactly
+    the replica count — set it to your core count and every core saturates, while the queue
+    absorbs everything else. One queue is load-bearing: RabbitMQ 4.x denies channel-global
+    prefetch, so a worker consuming three queues would quietly hold three jobs.
 
 **4. Manual acks (at-least-once, no lost work)**
 
@@ -56,7 +57,9 @@ An `ack` sent when the message *arrives* means a crash mid-transcode silently dr
 *   **The Method:** the worker acks **only after** the derivatives are in MinIO and Redis is
     updated. Kill a worker mid-encode and RabbitMQ redelivers the unacked message to another
     replica when the connection drops. Because output keys derive purely from the job ID,
-    redelivery overwrites rather than duplicating — at-least-once delivery becomes safe.
+    redelivery overwrites rather than duplicating — at-least-once delivery becomes safe. A job
+    that *keeps* killing its worker cannot loop forever: `q.work` is a quorum queue, whose
+    `x-delivery-count` header counts those unsettled deliveries, and they spend attempts too.
 
 **5. Bounded retry with a dead-letter path**
 
@@ -67,9 +70,9 @@ message at 100% CPU.
 *   **The Method:** a failure `nack(requeue: false)`s the message into a retry queue that has
     no consumers and a message TTL. When it expires, RabbitMQ dead-letters it **back** to the
     work queue — preserving the original routing key, so it lands where it came from. The
-    worker reads its attempt count from `x-death` and, once `MAX_ATTEMPTS` is reached (or the
-    error is non-retryable, like a corrupt file), **parks** it in a terminal queue and marks
-    the job failed. Transient failures heal themselves; corrupt files stop wasting CPU.
+    worker reads its attempt count from `x-death` (plus crashed deliveries, above) and, once
+    `MAX_ATTEMPTS` is reached (or the error is non-retryable, like a corrupt file), **parks**
+    it in a terminal queue and marks the job failed. Transient failures heal themselves; corrupt files stop wasting CPU.
 
 **6. Fan-out with an atomic barrier**
 
@@ -87,7 +90,7 @@ but the master playlist can only be written once all of them exist.
 Stopping a worker abruptly abandons a half-written HLS ladder and a job stuck at
 `processing`.
 *   **The Instrument:** SIGTERM handlers + Docker's `stop_grace_period`.
-*   **The Method:** on SIGTERM the worker cancels its consumers (no new deliveries), finishes
+*   **The Method:** on SIGTERM the worker cancels its consumer (no new deliveries), finishes
     the in-flight transcode, acks it, and closes cleanly. Temp directories are removed in
     `finally` on every path, including the parked-failure path.
 

@@ -41,18 +41,22 @@ export async function main(): Promise<void> {
   const jobPublisher = createJobPublisher({ channelProvider });
 
   const buckets = { uploadsBucket: config.BUCKET_UPLOADS, outputsBucket: config.BUCKET_OUTPUTS };
+  // Aborted only by a second signal, to kill a running ffmpeg child.
+  const encodeAbort = new AbortController();
   const jobHandlers: JobHandlers = {
     image: createImageHandler({ objectRepository, jobsRepository, ...buckets }),
     videoPlan: createVideoPlanHandler({
       objectRepository,
       jobsRepository,
       jobPublisher,
+      abortSignal: encodeAbort.signal,
       ...buckets,
     }),
     videoRendition: createVideoRenditionHandler({
       objectRepository,
       jobsRepository,
       segmentSeconds: config.HLS_SEGMENT_SECONDS,
+      abortSignal: encodeAbort.signal,
       ...buckets,
     }),
   };
@@ -82,7 +86,8 @@ export async function main(): Promise<void> {
 
   const shutdown = async (signal: NodeJS.Signals) => {
     if (shuttingDown) {
-      logger.warn({ signal }, "Second signal received; exiting immediately");
+      logger.warn({ signal }, "Second signal received; killing ffmpeg and exiting");
+      encodeAbort.abort();
       process.exit(1);
     }
     shuttingDown = true;

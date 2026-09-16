@@ -15,10 +15,10 @@ This plan builds that as a **small but production-shaped learning app**: a Fasti
 - **Language:** TypeScript (strict), ESM, `tsx` for dev, `zod` for runtime validation.
 - **HTTP:** Fastify 5 (deliberately different from the previous project's Express).
 - **The host stays clean.** `ffmpeg`/`ffprobe` are **never installed on the machine** — they are baked into the worker image from a static build. Host prerequisites are Docker and Node, nothing else.
-- **Multi-core model:** N **worker containers** (compose replicas), each consuming on one AMQP channel at channel-global `prefetch(1, true)` → exactly one job in flight per worker. Scaling is `--scale worker=N`, not threads.
+- **Multi-core model:** N **worker containers** (compose replicas), each running one consumer on the single work queue at `prefetch(1)` → exactly one job in flight per worker. Scaling is `--scale worker=N`, not threads.
 - **Memory model:** uploads stream request → MinIO via `@aws-sdk/lib-storage`; image transcodes stream MinIO → `sharp` → MinIO. Only video touches disk (ffmpeg needs a seekable file), in a temp dir removed in `finally`.
 - **Durability:** durable exchanges/queues, `persistent` messages, and a **confirm channel** — the API does not return `202` until the broker has confirmed the job.
-- **Reliability:** manual `ack` after success only; failures `nack(requeue:false)` into a **TTL delay queue** that dead-letters back to the work queue; after `MAX_ATTEMPTS` (read from the `x-death` header) the message is **parked** in a terminal DLQ and the job is marked failed.
+- **Reliability:** manual `ack` after success only; failures `nack(requeue:false)` into a **TTL delay queue** that dead-letters back to the work queue; after `MAX_ATTEMPTS` (read from the `x-death` header, plus the quorum queue's `x-delivery-count` for crashed workers) the message is **parked** in a terminal DLQ and the job is marked failed.
 - **Job state:** Redis — job records + progress, with pub/sub feeding **SSE** to the browser.
 - **Observability:** pino logs, `prom-client` → Prometheus → Grafana, **plus OpenTelemetry traces → Jaeger** so a single trace spans API → RabbitMQ → worker. Every datastore also gets a browser UI.
 - **Code structure:** modules export `createX(deps)` factories with structurally-typed dependencies (a dep object, or a single positional collaborator when there is exactly one); each process entrypoint is the composition root and the only place with import-time side effects. Config is the one deliberate singleton. No DI container.
@@ -42,11 +42,10 @@ This plan builds that as a **small but production-shaped learning app**: a Fasti
                           Redis pub/sub                   exchange media.jobs (topic)
                                   ▲                  ┌───────────┼───────────┐
                                   │            job.image.transform  job.video.plan  job.video.rendition
-                                  │                  │           │           │
-                                  │               q.image   q.video.plan  q.video.rendition
-                                  │                  └───────────┴───────────┘
+                                  │                  └───────────┼───────────┘
+                                  │                    q.work (quorum; handler chosen by routing key)
                                   │                              │  docker compose --scale worker=N
-                                  │                              │  each: 1 channel, prefetch(1, true)
+                                  │                              │  each: 1 consumer, prefetch(1)
                                   │                              ▼
                                   │        ┌──────────────────────────────────────┐
                                   └────────│ Worker container (node + static      │──▶ MinIO
@@ -56,10 +55,10 @@ This plan builds that as a **small but production-shaped learning app**: a Fasti
                                     fail → nack(requeue:false) → media.retry
                                               → q.retry (x-message-ttl 10s, no consumers)
                                               → dead-letters back to media.jobs (orig. routing key)
-                                    non-retryable, or this queue's x-death rejections + 1 >= MAX_ATTEMPTS
+                                    non-retryable, or x-death rejections + x-delivery-count + 1 >= MAX_ATTEMPTS
                                               → media.parked → q.parked (terminal)
 
-Video fan-out: q.video.plan (ffprobe, fast) records the ladder + renditionsExpected=N, then emits 1..3 rendition jobs.
+Video fan-out: the plan stage (ffprobe, fast) records the ladder + renditionsExpected=N, then emits 1..3 rendition jobs.
 Barrier:      each rendition marks its own entry in job:{id}:renditions; whoever sees N done writes master.m3u8.
 
 Infra (docker compose): RabbitMQ(+management,+prometheus), MinIO, Redis, RedisInsight,
@@ -144,7 +143,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
     │   └── sse.ts                      # SSE stream helper (heartbeat + cleanup on close)
     └── worker/
         ├── index.ts                    # composition root; signals; graceful drain
-        ├── consumer.ts                 # channel, prefetch(1,true), 3 consumers, ack/nack orchestration
+        ├── consumer.ts                 # one consumer on q.work, prefetch(1), ack/nack orchestration
         ├── retry.ts                    # PURE: x-death → retry | park decision
         ├── workspace.ts                # temp-dir lifecycle (mkdtemp / rm -rf in finally)
         └── handlers/{image,video-plan,video-rendition}.ts
@@ -216,7 +215,7 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - Queue depth is **not** a `media_*` metric: RabbitMQ's `rabbitmq_prometheus` plugin already publishes it per queue, and a second source would drift.
 
 ### 3. Domain + media core (pure first) — DONE
-- `domain/job.ts`: `JobMessageSchema` (the wire contract shared by API and worker) plus one schema per queue (`ImageJobMessageSchema`, `VideoJobMessageSchema`, `VideoRenditionJobMessageSchema` — the delivering queue, not a payload field, picks the schema), `JobRecordSchema`, `JobStatus` = `queued|processing|completed|failed`.
+- `domain/job.ts`: `JobMessageSchema` (the wire contract shared by API and worker) plus one schema per stage (`ImageJobMessageSchema`, `VideoJobMessageSchema`, `VideoRenditionJobMessageSchema` — the routing key, not a payload field, picks the schema), `JobRecordSchema`, `JobStatus` = `queued|processing|completed|failed`.
 - `domain/media.ts`: MIME allowlist (`image/{jpeg,png,webp,avif}`, `video/{mp4,quicktime,webm,x-matroska}`), `Rendition`, `ProbeResult`, and the **error classes that drive retry-vs-park**: `UnsupportedMediaError`, `CorruptMediaError`, `ObjectNotFoundError` (all `retryable = false`); everything else defaults to retryable.
 - `media/ladder.ts` — pure `buildLadder(probe)`: from `[1080p 5000k, 720p 2800k, 360p 800k]`, keep renditions whose height ≤ source height, **never upscale**; if the source is smaller than the smallest rung, emit a single source-height rendition. Takes the whole `ProbeResult` (not just height) so each rung's **width follows the source aspect ratio** — portrait and 4:3 sources must not be advertised as 16:9. Both dimensions are forced **even** (H.264 yuv420p requirement, matching ffmpeg's `scale=-2:h`). **Throws `CorruptMediaError` on unusable dimensions** rather than returning `[]`: an empty ladder would set `renditionsExpected = 0` and hang the fan-out barrier forever.
 - `media/hls.ts` — pure `buildMasterPlaylist(renditions)` → `#EXT-X-STREAM-INF:BANDWIDTH=…,RESOLUTION=…,CODECS="…"` + relative variant paths taken from `rendition.name`, so they can't drift from the directory the worker writes. The AVC codec string is **per rung, not fixed**: L3.0 `avc1.4d401e` ≤480p, L3.1 `avc1.4d401f` ≤720p, L4.0 `avc1.4d4028` above — a single hardcoded L3.1 under-declares 1080p and strict players reject it.
@@ -247,9 +246,7 @@ The single definition of every exchange, queue, binding and argument — asserte
 | Object | Type | Args |
 |---|---|---|
 | `media.jobs` | topic exchange, durable | — |
-| `q.image` | durable queue | `x-dead-letter-exchange: media.retry` |
-| `q.video.plan` | durable queue | `x-dead-letter-exchange: media.retry` |
-| `q.video.rendition` | durable queue | `x-dead-letter-exchange: media.retry` |
+| `q.work` | durable **quorum** queue, bound to all three routing keys *(three classic queues until step 11)* | `x-queue-type: quorum`, `x-dead-letter-exchange: media.retry` |
 | `media.retry` | topic exchange, durable | — |
 | `q.retry` | durable, **no consumers**, bound `#` | `x-message-ttl: RETRY_TTL_MS`, `x-dead-letter-exchange: media.jobs` |
 | `media.parked` | topic exchange, durable | — |
@@ -321,7 +318,7 @@ Deviations and additions, each for a stated reason:
 - **Parking confirms before it acks.** The copy published to `media.parked` keeps the routing key and headers and adds `park-queue` / `park-error`; the original is acked only after the broker confirms it. Marking Redis `failed` is best-effort and uses `messageId`, which the publisher sets to the `jobId`, so even an unparseable body is traced to its job.
 - **Handlers own `processing` / `completed`**, not the consumer: for video, only the last rendition knows the job is finished.
 - **The in-flight limit comes from `AMQP_PREFETCH`** (default 1), still applied with `global: true`.
-- **Known gap:** a worker killed mid-job (OOM, SIGKILL) has its message redelivered without an `x-death` entry, so the attempt count never rises and a job that crashes its worker loops. Classic queues cannot cap this; a quorum queue's `delivery-limit` can — a step 11 candidate.
+- *(Superseded in step 11: the three queues and `prefetch(1, true)` above became one quorum queue with a plain `prefetch(1)`, and the crash-loop gap is closed.)*
 - The worker metrics are declared in `lib/metrics.ts` but not yet recorded — step 10.
 
 ### 9. Handlers (`src/worker/handlers/`) — DONE
@@ -343,7 +340,7 @@ Deviations from the text above, each for a stated reason:
 - **The video path has not yet run end-to-end** (Verification §4–6, via `transcode-verifier`). ffmpeg does not run on the host, so the video handlers are unit-tested only through `parseProbe` / `buildHlsOutputOptions` and the repository barrier. The image handler runs against real sharp.
 
 ### 10. Observability — DONE
-- `prom-client`: `media_jobs_total{type,status}`, `media_transcode_duration_seconds{type,rendition}`, `media_upload_bytes`, `media_retries_total{queue}`, `media_parked_total{queue,reason}`, `media_worker_busy`, plus default metrics (incl. event-loop lag).
+- `prom-client`: `media_jobs_total{type,status}`, `media_transcode_duration_seconds{type,rendition}`, `media_upload_bytes`, `media_retries_total{routing_key}`, `media_parked_total{routing_key,reason}` (labelled `queue` until step 11), `media_worker_busy`, plus default metrics (incl. event-loop lag).
 - `prometheus.yml` scrapes: the host API via `host.docker.internal`, RabbitMQ's own `:15692/metrics`, and worker replicas via `dns_sd_configs: [{ names: [worker], type: A, port: <WORKER_METRICS_PORT> }]`.
 - **Two Grafana dashboards, not one** — split by the question each answers, which is the standard overview→drill-down pattern:
   - **`pipeline.json` — "is the pipeline keeping up?"** Queue depth per queue, jobs/min by status, transcode duration p50/p95 by rendition, retry + parked rate, worker busy ratio, upload throughput and `202` latency.
@@ -355,7 +352,7 @@ Deviations from the text above, each for a stated reason:
 - `lib/tracing.ts`: `NodeSDK` with the http/fastify/amqplib/ioredis/aws-sdk instrumentations and an OTLP/HTTP exporter → Jaeger. **Imported first** in both entrypoints (before any instrumented library). Acceptance check: one Jaeger trace contains the API span *and* the worker's ffmpeg span — proving the amqplib instrumentation propagated context through the message headers.
 
 Deviations from the text above, each for a stated reason:
-- **The worker's metrics are recorded in `consumer.ts`, not in the handlers.** It is the one place that already knows the queue, the settlement decision and the delivery's start and end, so the handlers stay free of instrumentation. The `rendition` label is the exception that shapes the code: only the parsed body names a rung, so each entry in `handlerByQueue` now *returns* its stage label (`image`, `plan`, or the rendition name) and the consumer supplies it when it stops the timer.
+- **The worker's metrics are recorded in `consumer.ts`, not in the handlers.** It is the one place that already knows the queue, the settlement decision and the delivery's start and end, so the handlers stay free of instrumentation. The `rendition` label is the exception that shapes the code: only the parsed body names a rung, so each stage's handler dispatch now *returns* its stage label (`image`, `plan`, or the rendition name) and the consumer supplies it when it stops the timer.
 - **`media_jobs_total` counts stages, not uploads.** A video increments it once for its plan and once per rung, because a stage is what a worker settles. The help text and the dashboard panel both say so rather than implying an upload count.
 - **`media_worker_busy` is incremented/decremented, not set to 1/0.** At `prefetch(1)` the two are identical; the gauge keeps telling the truth if the prefetch is ever raised.
 - **Only successful stages are timed.** A failure's duration is the time to the error, which would drag the encode percentiles toward zero and hide a slow ladder.
@@ -363,10 +360,19 @@ Deviations from the text above, each for a stated reason:
 - **No manual ffmpeg span.** The amqplib instrumentation makes the consume span the active context for the whole handler, so the S3 and Redis spans inside a transcode already hang off the API's trace. Adding a hand-rolled span would prove nothing the propagation does not.
 - **The trace-continuity check has not been run** — it needs the stack up (Verification §8), like the video path from step 9.
 
-### 11. Reliability
-- **Graceful shutdown:** SIGTERM → `ch.cancel(consumerTag)` for all three consumers (stop new deliveries), await the in-flight job, ack it, close channel + connection, flush the tracer, exit 0. A second signal kills the ffmpeg child immediately. *(In place since step 9: `worker/index.ts` cancels, drains, closes and flushes. Still missing: a second signal exits the process without explicitly killing the ffmpeg child.)*
+### 11. Reliability — DONE
+- **Graceful shutdown:** SIGTERM → cancel the consumer (stop new deliveries), await the in-flight job, ack it, close channel + connection, flush the tracer, exit 0. A second signal kills the ffmpeg child immediately.
 - **No-loss proof:** kill a worker mid-transcode; the unacked message is redelivered when the connection drops, another replica picks it up, deterministic keys make the rewrite harmless.
 - **Idempotency:** output keys derive from `jobId` + rendition, so redelivery overwrites rather than duplicating; the barrier is keyed by rendition name (see step 9), so a redelivered rendition is never counted twice.
+
+Deviations, each found by probing a live `rabbitmq:4.3` broker:
+- **One quorum work queue `q.work` replaces `q.image` / `q.video.plan` / `q.video.rendition`.** On 4.3 `global_qos` is `denied_by_default` (`rabbitmqctl list_deprecated_features`): `prefetch(1, true)` is silently applied *per consumer*, and a worker with three consumers held more than one unacked job. With one queue bound to all three routing keys and one consumer, a plain `prefetch(1)` is one job per container again. The consumer picks the handler (and schema) by `fields.routingKey`; the retry round-trip preserves that key, so retries return to `q.work` unchanged.
+- **Worker crashes spend attempts.** This closes step 8's known gap. Classic queues cannot count crashes: `redelivered` is only a flag, and once set it survives the retry round-trip. A quorum queue stamps `x-delivery-count`. Verified: it rises by one per unsettled close, does not rise on `nack(requeue:false)`, and survives the round-trip. `decideRetry` counts attempts as x-death rejections + `x-delivery-count`. Before running a delivery, the consumer throws a plain error once those prior attempts (`countPriorAttempts`, shared with `decideRetry`) reach `MAX_ATTEMPTS`, so the existing path parks it as `max-attempts` and marks the job failed. Parking drops `x-delivery-count` from the parked copy: the broker keeps a published value, so a replayed message would otherwise re-park without running (reproduced on the stack). Verified on the compose stack: the holder of one rendition was killed three times, and the fourth delivery parked without running. Note that `docker kill` counts as a manual stop, so `restart: unless-stopped` does not bring that container back; the policy covers a worker that exits on its own.
+- **`media_retries_total` / `media_parked_total` are labelled `routing_key`, not `queue`**, because with one queue the label would always read `q.work`. The pipeline dashboard groups by it.
+- **The consumer dispatches with a `switch` on routing key**, whose `default` throws `InvalidJobMessageError`, so an unknown key parks at once instead of spending retries.
+- **The second signal aborts an `AbortController`** passed to the video handlers; `media/ffmpeg.ts` SIGKILLs the running command on abort. Exiting Node alone would leave ffmpeg as an orphan. Accepted: that emergency exit skips the handler's `finally`, so it can leave one temp dir behind.
+- **Left out for simplicity:** at-least-once dead-lettering, an explicit `x-delivery-limit` (the broker default of 20 is never reached), and per-stage queue depth. Per-stage retry and park rates are still on the dashboard.
+- **One-time broker cleanup:** a broker created before this step still has the three classic queues bound to `media.jobs`, collecting a copy of every job. Delete them once (or the RabbitMQ volume).
 
 ### 12. Developer ergonomics + UI
 - npm scripts: `up` (`--scale worker=${WORKERS:-4}`), `down`, `build:worker`, `logs:worker`, `infra:init`, `dev:api`, `load`, `lint`, `format`, `typecheck`, `test`, `test:watch`, `test:integration`. `Makefile` mirrors them. *(Already in place: the npm scripts and `Makefile`. `scripts/` and `public/` are still empty, so `infra:init` and `load` do not run yet.)*
@@ -398,7 +404,7 @@ This structure is the token-saving lesson: `CLAUDE.md` loads every turn so it st
 ---
 
 ## Best practices demonstrated (learning goals)
-- **RabbitMQ:** durable topology, persistent messages, **publisher confirms before acknowledging the client**, manual `ack` after side effects, channel-global `prefetch(1)` as the unit of concurrency, DLX-based **bounded retry via a TTL delay queue**, `x-death` introspection, terminal parking, topic-exchange **fan-out with a redelivery-safe barrier**.
+- **RabbitMQ:** durable topology, persistent messages, **publisher confirms before acknowledging the client**, manual `ack` after side effects, a single-consumer `prefetch(1)` as the unit of concurrency, DLX-based **bounded retry via a TTL delay queue**, `x-death` introspection, terminal parking, topic-exchange **fan-out with a redelivery-safe barrier**.
 - **Object storage / S3:** path-style addressing for MinIO, **multipart streaming uploads** with `lib-storage`, streaming reads, deterministic keys for idempotency, separate raw/derivative buckets.
 - **Node:** never hold a media file in memory, never block the event loop (native work in libvips threads and ffmpeg child processes), backpressure via `prefetch`, temp-dir lifecycles that survive failure paths, graceful drain on SIGTERM, typed config + runtime validation, structured logging, first-class metrics and traces.
 - **Scaling:** horizontal worker replicas as the multi-core strategy, with DNS-based scrape discovery so observability scales with them.

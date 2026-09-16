@@ -55,8 +55,8 @@ function createFakeChannel() {
     prefetchCalls,
     failConfirmsWith: (error: Error) => (confirmError = error),
     /** Resolves once the consumer has settled the delivery. */
-    deliver: async (queue: string, message: ConsumeMessage) => {
-      await consumers.get(queue)!(message);
+    deliver: async (message: ConsumeMessage) => {
+      await consumers.get(QUEUES.WORK)!(message);
     },
   };
 }
@@ -185,21 +185,20 @@ async function metricValue(
 }
 
 describe("createJobConsumer", () => {
-  it("shares one channel-wide prefetch slot across all three work queues", async () => {
+  it("runs one consumer on the work queue with a plain, non-global prefetch", async () => {
     const { fake } = await build();
 
-    expect(fake.prefetchCalls).toEqual([{ count: 1, global: true }]);
-    expect([...fake.consumers.keys()].sort()).toEqual(
-      [QUEUES.IMAGE, QUEUES.VIDEO_PLAN, QUEUES.VIDEO_RENDITION].sort(),
-    );
+    // Global QoS is denied on RabbitMQ 4.x; one consumer is what makes 1 mean 1.
+    expect(fake.prefetchCalls).toEqual([{ count: 1, global: undefined }]);
+    expect([...fake.consumers.keys()]).toEqual([QUEUES.WORK]);
   });
 
-  it("parses with the delivering queue's schema, runs its handler, then acks", async () => {
+  it("parses with the routing key's schema, runs its handler, then acks", async () => {
     const { fake, handlers } = await build();
     const { body } = imageJob();
     const message = buildMessage(body);
 
-    await fake.deliver(QUEUES.IMAGE, message);
+    await fake.deliver(message);
 
     expect(handlers.calls).toEqual([{ handler: "image", message: body }]);
     expect(fake.acked).toEqual([message]);
@@ -212,8 +211,10 @@ describe("createJobConsumer", () => {
     const rendition = { name: "720p", width: 1280, height: 720, bandwidth: 2_800_000 };
 
     await fake.deliver(
-      QUEUES.VIDEO_RENDITION,
-      buildMessage({ ...body, type: "video", mime: "video/mp4", rendition }),
+      buildMessage(
+        { ...body, type: "video", mime: "video/mp4", rendition },
+        { routingKey: ROUTING_KEYS.VIDEO_RENDITION },
+      ),
     );
 
     expect(handlers.calls.map((call) => call.handler)).toEqual(["videoRendition"]);
@@ -225,7 +226,7 @@ describe("createJobConsumer", () => {
     let release!: () => void;
     handlers.holdUntil(new Promise((resolve) => (release = resolve)));
 
-    const delivery = fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    const delivery = fake.deliver(buildMessage(imageJob().body));
     await Promise.resolve();
     expect(fake.acked).toHaveLength(0);
 
@@ -239,7 +240,7 @@ describe("createJobConsumer", () => {
     handlers.failWith(new Error("minio timeout"));
     const message = buildMessage(imageJob().body);
 
-    await fake.deliver(QUEUES.IMAGE, message);
+    await fake.deliver(message);
 
     expect(fake.nacked).toEqual([{ message, requeue: false }]);
     expect(fake.acked).toHaveLength(0);
@@ -256,12 +257,12 @@ describe("createJobConsumer", () => {
       headers: {
         "x-death": [
           { queue: QUEUES.RETRY, reason: "expired", count: 2 },
-          { queue: QUEUES.IMAGE, reason: "rejected", count: 2 },
+          { queue: QUEUES.WORK, reason: "rejected", count: 2 },
         ] as MessagePropertyHeaders["x-death"],
       },
     });
 
-    await fake.deliver(QUEUES.IMAGE, message);
+    await fake.deliver(message);
 
     expect(fake.published).toEqual([
       {
@@ -280,7 +281,7 @@ describe("createJobConsumer", () => {
     const { fake, handlers } = await build();
     handlers.failWith(new CorruptMediaError("bad moov atom"));
 
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    await fake.deliver(buildMessage(imageJob().body));
 
     expect(fake.published[0].exchange).toBe(EXCHANGES.PARKED);
     expect(fake.acked).toHaveLength(1);
@@ -289,12 +290,15 @@ describe("createJobConsumer", () => {
   it.each([
     { name: "a body that is not JSON", body: "{not json" },
     { name: "a body that breaks the schema", body: { type: "image", jobId: "nope" } },
-    { name: "a video message on the image queue", body: { ...imageJob().body, type: "video" } },
+    {
+      name: "a video body under the image routing key",
+      body: { ...imageJob().body, type: "video" },
+    },
   ])("parks $name without calling a handler", async ({ body }) => {
     const { fake, handlers, failed } = await build();
     const jobId = randomUUID();
 
-    await fake.deliver(QUEUES.IMAGE, buildMessage(body, { messageId: jobId }));
+    await fake.deliver(buildMessage(body, { messageId: jobId }));
 
     expect(handlers.calls).toHaveLength(0);
     expect(fake.published[0].exchange).toBe(EXCHANGES.PARKED);
@@ -303,12 +307,63 @@ describe("createJobConsumer", () => {
     expect(failed[0].jobId).toBe(jobId);
   });
 
+  it("parks a job that crashed its worker on every attempt, without running it again", async () => {
+    const { fake, handlers, failed } = await build({ maxAttempts: 3 });
+    const { jobId, body } = imageJob();
+
+    await fake.deliver(
+      buildMessage(body, { messageId: jobId, headers: { "x-delivery-count": 3 } }),
+    );
+
+    expect(handlers.calls).toHaveLength(0);
+    expect(fake.published[0].exchange).toBe(EXCHANGES.PARKED);
+    expect(fake.acked).toHaveLength(1);
+    expect(failed[0].error).toMatch(/^max-attempts: Worker crashed/);
+    // A replay must start fresh, not arrive already at the crash limit.
+    expect(fake.published[0].options.headers).not.toHaveProperty("x-delivery-count");
+    expect(fake.published[0].options.headers).toHaveProperty("park-error");
+  });
+
+  it("counts thrown failures and crashes together before running", async () => {
+    const { fake, handlers } = await build({ maxAttempts: 3 });
+    const headers: MessagePropertyHeaders = {
+      "x-death": [
+        { queue: QUEUES.WORK, reason: "rejected", count: 1 },
+      ] as MessagePropertyHeaders["x-death"],
+      "x-delivery-count": 2,
+    };
+
+    await fake.deliver(buildMessage(imageJob().body, { headers }));
+
+    expect(handlers.calls).toHaveLength(0);
+    expect(fake.published[0].exchange).toBe(EXCHANGES.PARKED);
+  });
+
+  it("parks an unknown routing key without retrying", async () => {
+    const { fake, handlers } = await build();
+
+    await fake.deliver(buildMessage(imageJob().body, { routingKey: "job.audio.transcode" }));
+
+    expect(handlers.calls).toHaveLength(0);
+    expect(fake.published[0].exchange).toBe(EXCHANGES.PARKED);
+    expect(fake.nacked).toHaveLength(0);
+  });
+
+  it("still runs a job whose worker crashed fewer times than the limit", async () => {
+    const { fake, handlers } = await build({ maxAttempts: 3 });
+
+    await fake.deliver(buildMessage(imageJob().body, { headers: { "x-delivery-count": 2 } }));
+
+    expect(handlers.calls).toHaveLength(1);
+    expect(fake.acked).toHaveLength(1);
+  });
+
   it("still parks when the Redis write fails", async () => {
     const { fake, handlers, failMarkFailedWith } = await build();
     handlers.failWith(new CorruptMediaError("bad"));
     failMarkFailedWith(new Error("redis down"));
 
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body, { messageId: randomUUID() }));
+    await fake.deliver(buildMessage(imageJob().body, { messageId: randomUUID() }));
 
     expect(fake.published).toHaveLength(1);
     expect(fake.acked).toHaveLength(1);
@@ -320,7 +375,7 @@ describe("createJobConsumer", () => {
     fake.failConfirmsWith(new Error("nack from broker"));
 
     // Must resolve, not reject: amqplib would surface a rejection as unhandled.
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    await fake.deliver(buildMessage(imageJob().body));
 
     expect(fake.acked).toHaveLength(0);
   });
@@ -336,7 +391,7 @@ describe("createJobConsumer", () => {
       rendition: "image",
     });
 
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    await fake.deliver(buildMessage(imageJob().body));
 
     expect(await metricValue(mediaMetrics.jobsTotal, { type: "image", status: "completed" })).toBe(
       before + 1,
@@ -349,44 +404,41 @@ describe("createJobConsumer", () => {
     expect(await metricValue(mediaMetrics.workerBusy)).toBe(0);
   });
 
-  it("counts a retry and a park under the queue that failed", async () => {
+  it("counts a retry and a park under the stage's routing key", async () => {
     const { fake, handlers } = await build();
-    const retriesBefore = await metricValue(mediaMetrics.retriesTotal, { queue: QUEUES.IMAGE });
+    const stage = { routing_key: ROUTING_KEYS.IMAGE_TRANSFORM };
+    const retriesBefore = await metricValue(mediaMetrics.retriesTotal, stage);
     const parksBefore = await metricValue(mediaMetrics.parkedTotal, {
-      queue: QUEUES.IMAGE,
+      ...stage,
       reason: "non-retryable",
     });
 
     handlers.failWith(new Error("minio timeout"));
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    await fake.deliver(buildMessage(imageJob().body));
     handlers.failWith(new CorruptMediaError("bad moov atom"));
-    await fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    await fake.deliver(buildMessage(imageJob().body));
 
-    expect(await metricValue(mediaMetrics.retriesTotal, { queue: QUEUES.IMAGE })).toBe(
-      retriesBefore + 1,
-    );
+    expect(await metricValue(mediaMetrics.retriesTotal, stage)).toBe(retriesBefore + 1);
     expect(
       await metricValue(mediaMetrics.parkedTotal, {
-        queue: QUEUES.IMAGE,
+        ...stage,
         reason: "non-retryable",
       }),
     ).toBe(parksBefore + 1);
     expect(await metricValue(mediaMetrics.workerBusy)).toBe(0);
   });
 
-  it("stop cancels every consumer, then waits for the in-flight job to ack", async () => {
+  it("stop cancels the consumer, then waits for the in-flight job to ack", async () => {
     const { consumer, fake, handlers } = await build();
     let release!: () => void;
     handlers.holdUntil(new Promise((resolve) => (release = resolve)));
-    const delivery = fake.deliver(QUEUES.IMAGE, buildMessage(imageJob().body));
+    const delivery = fake.deliver(buildMessage(imageJob().body));
 
     let stopped = false;
     const stopping = consumer.stop().then(() => (stopped = true));
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(fake.cancelled.sort()).toEqual(
-      [`tag:${QUEUES.IMAGE}`, `tag:${QUEUES.VIDEO_PLAN}`, `tag:${QUEUES.VIDEO_RENDITION}`].sort(),
-    );
+    expect(fake.cancelled).toEqual([`tag:${QUEUES.WORK}`]);
     expect(stopped).toBe(false);
 
     release();

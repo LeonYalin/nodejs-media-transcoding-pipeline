@@ -12,15 +12,13 @@ import { InvalidJobMessageError } from "../domain/media.js";
 import type { JobsRepository } from "../lib/jobs-repository.js";
 import { logger } from "../lib/logger.js";
 import { mediaMetrics } from "../lib/metrics.js";
-import { EXCHANGES, QUEUES } from "../lib/topology.js";
-import { decideRetry } from "./retry.js";
+import { EXCHANGES, QUEUES, ROUTING_KEYS } from "../lib/topology.js";
+import { countPriorAttempts, decideRetry } from "./retry.js";
 
-/** The `type` label on every worker metric; the delivering queue decides it. */
-const MEDIA_TYPE_BY_QUEUE: Record<string, "image" | "video"> = {
-  [QUEUES.IMAGE]: "image",
-  [QUEUES.VIDEO_PLAN]: "video",
-  [QUEUES.VIDEO_RENDITION]: "video",
-};
+/** The `type` label on every worker metric. */
+function mediaTypeOf(routingKey: string): "image" | "video" {
+  return routingKey === ROUTING_KEYS.IMAGE_TRANSFORM ? "image" : "video";
+}
 
 /**
  * The slice of amqplib's ConfirmChannel the consumer uses, declared structurally
@@ -63,7 +61,7 @@ export interface JobConsumerDeps {
   jobHandlers: JobHandlers;
   jobsRepository: Pick<JobsRepository, "markFailed">;
   maxAttempts: number;
-  /** Channel-wide in-flight limit shared by all three consumers: 1 = one job per container. */
+  /** In-flight limit of the single consumer: 1 = one job per container. */
   prefetch?: number;
 }
 
@@ -77,8 +75,8 @@ function parseBody<T>(schema: z.ZodType<T>, content: Buffer): T {
 }
 
 /**
- * Three consumers on one channel, ack-after-success, and the retry-vs-park
- * settlement of every failure.
+ * One consumer on q.work, dispatch by routing key, ack-after-success, and the
+ * retry-vs-park settlement of every failure.
  */
 export function createJobConsumer({
   channel,
@@ -87,29 +85,33 @@ export function createJobConsumer({
   maxAttempts,
   prefetch = 1,
 }: JobConsumerDeps) {
-  // The payload carries no stage discriminator (see domain/job.ts): the
-  // delivering queue decides the schema. Each returns the `rendition` label for
-  // media_transcode_duration_seconds, which only the parsed body can name.
-  const handlerByQueue: Record<string, (content: Buffer) => Promise<string>> = {
-    [QUEUES.IMAGE]: async (content) => {
-      await jobHandlers.image(parseBody(ImageJobMessageSchema, content));
-      return "image";
-    },
-    [QUEUES.VIDEO_PLAN]: async (content) => {
-      await jobHandlers.videoPlan(parseBody(VideoJobMessageSchema, content));
-      return "plan";
-    },
-    [QUEUES.VIDEO_RENDITION]: async (content) => {
-      const message = parseBody(VideoRenditionJobMessageSchema, content);
-      await jobHandlers.videoRendition(message);
-      return message.rendition.name;
-    },
-  };
+  /**
+   * The payload carries no stage discriminator (see domain/job.ts): the routing
+   * key decides the schema and the handler. Returns the `rendition` label for
+   * media_transcode_duration_seconds, which only the parsed body can name.
+   */
+  async function runHandler(routingKey: string, content: Buffer): Promise<string> {
+    switch (routingKey) {
+      case ROUTING_KEYS.IMAGE_TRANSFORM:
+        await jobHandlers.image(parseBody(ImageJobMessageSchema, content));
+        return "image";
+      case ROUTING_KEYS.VIDEO_PLAN:
+        await jobHandlers.videoPlan(parseBody(VideoJobMessageSchema, content));
+        return "plan";
+      case ROUTING_KEYS.VIDEO_RENDITION: {
+        const message = parseBody(VideoRenditionJobMessageSchema, content);
+        await jobHandlers.videoRendition(message);
+        return message.rendition.name;
+      }
+      default:
+        throw new InvalidJobMessageError(`No handler for routing key "${routingKey}"`);
+    }
+  }
 
-  const consumerTags: string[] = [];
+  let consumerTag: string | null = null;
   const inFlight = new Set<Promise<void>>();
 
-  async function park(message: ConsumeMessage, queue: string, detail: string): Promise<void> {
+  async function park(message: ConsumeMessage, detail: string): Promise<void> {
     // The publisher sets messageId = jobId, so even an unparseable body can
     // have its record marked. Best-effort: Redis must not block parking.
     const jobId: unknown = message.properties.messageId;
@@ -118,6 +120,15 @@ export function createJobConsumer({
         logger.warn({ err: error, jobId }, "Could not mark parked job failed");
       });
     }
+
+    // A replayed copy must not arrive with its crashes already counted: the
+    // broker keeps a published `x-delivery-count` rather than resetting it.
+    const headers: Record<string, unknown> = {
+      ...message.properties.headers,
+      "park-queue": QUEUES.WORK,
+      "park-error": detail,
+    };
+    delete headers["x-delivery-count"];
 
     // Confirmed before the ack: the parked copy must exist before the original
     // is released, or a broker hiccup loses the message outright.
@@ -130,7 +141,7 @@ export function createJobConsumer({
           persistent: true,
           contentType: message.properties.contentType,
           messageId: message.properties.messageId,
-          headers: { ...message.properties.headers, "park-queue": queue, "park-error": detail },
+          headers,
         },
         (error) => (error ? reject(error) : resolve()),
       );
@@ -138,18 +149,19 @@ export function createJobConsumer({
     channel.ack(message);
   }
 
-  async function settleFailure(message: ConsumeMessage, queue: string, error: unknown) {
+  async function settleFailure(message: ConsumeMessage, error: unknown) {
+    const { routingKey } = message.fields;
     const decision = decideRetry({
       error,
       headers: message.properties.headers,
-      queue,
+      queue: QUEUES.WORK,
       maxAttempts,
     });
-    const log = logger.child({ queue, jobId: message.properties.messageId, ...decision });
+    const log = logger.child({ routingKey, jobId: message.properties.messageId, ...decision });
 
     if (decision.action === "retry") {
       log.warn({ err: error }, "Job failed; retrying after delay");
-      mediaMetrics.retriesTotal.inc({ queue });
+      mediaMetrics.retriesTotal.inc({ routing_key: routingKey });
       // requeue:false dead-letters into media.retry. requeue:true would spin the
       // same failure straight back, with no delay and no attempt count.
       channel.nack(message, false, false);
@@ -157,31 +169,40 @@ export function createJobConsumer({
     }
 
     log.error({ err: error }, "Job parked");
-    mediaMetrics.parkedTotal.inc({ queue, reason: decision.reason });
-    mediaMetrics.jobsTotal.inc({ type: MEDIA_TYPE_BY_QUEUE[queue], status: "failed" });
+    mediaMetrics.parkedTotal.inc({ routing_key: routingKey, reason: decision.reason });
+    mediaMetrics.jobsTotal.inc({ type: mediaTypeOf(routingKey), status: "failed" });
     const reason = error instanceof Error ? error.message : String(error);
-    await park(message, queue, `${decision.reason}: ${reason}`);
+    await park(message, `${decision.reason}: ${reason}`);
   }
 
-  async function handleDelivery(queue: string, message: ConsumeMessage): Promise<void> {
-    const type = MEDIA_TYPE_BY_QUEUE[queue];
+  async function handleDelivery(message: ConsumeMessage): Promise<void> {
+    const { routingKey } = message.fields;
+    const type = mediaTypeOf(routingKey);
     // Gauge, not a flag: at prefetch 1 this is the 0/1 the dashboard reads, and
     // it still tells the truth if the limit is ever raised.
     mediaMetrics.workerBusy.inc();
     const stopTimer = mediaMetrics.transcodeDuration.startTimer({ type });
 
     try {
+      // A worker that crashed never reached `catch`, so its attempt was never
+      // judged. Once crashes have used up the attempts, fail without running
+      // the job again -- settleFailure then parks it as max-attempts.
+      const priorAttempts = countPriorAttempts(message.properties.headers, QUEUES.WORK);
+      if (priorAttempts >= maxAttempts) {
+        throw new Error(`Worker crashed or lost its connection; ${priorAttempts} attempts used`);
+      }
+
       // Timed only on success: a failure's duration is the time to the error,
       // which would drag the encode percentiles down.
-      stopTimer({ rendition: await handlerByQueue[queue](message.content) });
+      stopTimer({ rendition: await runHandler(routingKey, message.content) });
       mediaMetrics.jobsTotal.inc({ type, status: "completed" });
       channel.ack(message);
     } catch (error) {
-      await settleFailure(message, queue, error).catch((settleError: unknown) => {
+      await settleFailure(message, error).catch((settleError: unknown) => {
         // Only reachable when the channel itself is failing. The broker requeues
         // every unacked delivery when a channel closes, and deterministic output
         // keys make the rerun overwrite rather than duplicate.
-        logger.error({ err: settleError, queue }, "Could not settle delivery");
+        logger.error({ err: settleError, routingKey }, "Could not settle delivery");
       });
     } finally {
       mediaMetrics.workerBusy.dec();
@@ -189,33 +210,32 @@ export function createJobConsumer({
   }
 
   async function start(): Promise<void> {
-    // `global: true` makes the limit channel-wide, so the three consumers share
-    // one slot. Without it RabbitMQ applies it per consumer, and one container
-    // would run an image, a plan and a rendition at once.
-    await channel.prefetch(prefetch, true);
+    // Not `global`: RabbitMQ 4.x denies global QoS. One consumer makes the
+    // per-consumer limit the per-container limit.
+    await channel.prefetch(prefetch);
 
-    for (const queue of Object.keys(handlerByQueue)) {
-      const { consumerTag } = await channel.consume(
-        queue,
-        (message) => {
-          // null = the broker cancelled us (queue deleted). Nothing to settle.
-          if (!message) return logger.error({ queue }, "Consumer cancelled by broker");
-          const delivery = handleDelivery(queue, message);
-          inFlight.add(delivery);
-          return delivery.finally(() => inFlight.delete(delivery));
-        },
-        { noAck: false },
-      );
-      consumerTags.push(consumerTag);
-    }
+    const consumer = await channel.consume(
+      QUEUES.WORK,
+      (message) => {
+        // null = the broker cancelled us (queue deleted). Nothing to settle.
+        if (!message) return logger.error("Consumer cancelled by broker");
+        const delivery = handleDelivery(message);
+        inFlight.add(delivery);
+        return delivery.finally(() => inFlight.delete(delivery));
+      },
+      { noAck: false },
+    );
+    consumerTag = consumer.consumerTag;
 
-    logger.info({ queues: Object.keys(handlerByQueue), prefetch }, "Worker consuming");
+    logger.info({ queue: QUEUES.WORK, prefetch }, "Worker consuming");
   }
 
   /** Stop new deliveries, then let the in-flight job finish and settle. */
   async function stop(): Promise<void> {
-    await Promise.allSettled(consumerTags.map((tag) => channel.cancel(tag)));
-    consumerTags.length = 0;
+    // Ignored: after a lost connection the channel is already gone, and so is
+    // the consumer -- there is nothing left to stop but the in-flight job.
+    if (consumerTag) await channel.cancel(consumerTag).catch(() => undefined);
+    consumerTag = null;
     await Promise.allSettled(inFlight);
   }
 

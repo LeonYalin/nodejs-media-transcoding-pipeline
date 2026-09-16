@@ -5,7 +5,7 @@ A **Fastify API** streams uploads straight into **MinIO** and returns `202 Accep
 > Status: greenfield. Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Data flow
-`POST /uploads → (stream) MinIO media-uploads → confirm-publish to media.jobs → q.image | q.video.plan → fan-out q.video.rendition → sharp/ffmpeg → MinIO media-outputs → Redis + SSE`
+`POST /uploads → (stream) MinIO media-uploads → confirm-publish to media.jobs → q.work (image | video plan → fan-out video renditions, by routing key) → sharp/ffmpeg → MinIO media-outputs → Redis + SSE`
 Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after `MAX_ATTEMPTS` → **`q.parked`** (terminal), job marked failed.
 
 ## Where things run
@@ -23,11 +23,11 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 
 ## Conventions (non-negotiable)
 - TypeScript strict, ESM. Env only via `src/config`; logs only via `src/lib/logger`; metrics only via `src/lib/metrics`; S3 only via `src/lib/object-repository`; Redis writes only via `src/lib/jobs-repository`; AMQP topology only from `src/lib/topology`.
-- **Messaging invariants:** publish `persistent` on a **confirm channel** and `waitForConfirms()` *before* replying `202` — never acknowledge a client for a job the broker hasn't accepted. `ack` **only after** the derivatives are uploaded and Redis is updated. `prefetch(1, true)` — channel-global, so one container = one job in flight. Failures `nack(requeue:false)` into the retry path; non-retryable errors and `MAX_ATTEMPTS` go straight to `q.parked`, never a poison-message loop.
-- **Retry counting:** read the `x-death` entry matching *this* work queue with `reason: rejected` — not `x-death[0]`, which may be the `q.retry`/`expired` entry.
+- **Messaging invariants:** publish `persistent` on a **confirm channel** and `waitForConfirms()` *before* replying `202` — never acknowledge a client for a job the broker hasn't accepted. `ack` **only after** the derivatives are uploaded and Redis is updated. One quorum work queue `q.work` (all three routing keys), one consumer, `prefetch(1)` — one container = one job in flight; never add a second consumer or work queue. Failures `nack(requeue:false)` into the retry path; non-retryable errors and `MAX_ATTEMPTS` go straight to `q.parked`, never a poison-message loop.
+- **Retry counting:** attempts = the `x-death` entry for `q.work` with `reason: rejected` (not `x-death[0]`, which may be the `q.retry`/`expired` entry) + `x-delivery-count` (deliveries a crashed worker never settled). A delivery whose crashes alone reach `MAX_ATTEMPTS` parks without running.
 - **Memory:** never buffer a media file. Uploads stream request→MinIO; image transcodes stream MinIO→sharp→MinIO. Only video uses a temp dir (ffmpeg needs a seekable file), always removed in `finally`, including on the park path.
 - **Idempotency:** output keys are deterministic from `jobId` (+ rendition) — at-least-once redelivery must overwrite, never duplicate.
-- **Shutdown:** SIGTERM → cancel consumers, finish the in-flight job, ack, close, flush traces.
+- **Shutdown:** SIGTERM → cancel the consumer, finish the in-flight job, ack, close, flush traces.
 - **Layering:** route (HTTP only) → `*-service` (orchestration) → `*-repository` (the single access path to one datastore) → client. The test is collaborator count, never amount of logic: one datastore and no peers → repository, however much encoding, indexing or query shaping it owns; two or more collaborators plus a use case to sequence (and its compensating actions) → service. Repositories and services export their type as `ReturnType<typeof createX>` rather than a hand-written interface; only *input* contracts are hand-written. Deps narrow with `Pick<>` to the methods actually called.
 - **Scope:** declare next to first use; never wedge a declaration between sibling blocks (e.g. two route registrations) — hoist it above them. Module scope stays right for pure helpers, constant tables, zod schemas and `import.meta.url` paths; so does closure state a listener captures.
 - **HTTP contracts:** every route declares Fastify generics from `src/api/contracts.ts` — `*Request` for `Params`/`Querystring`/`Body`, `*Reply` for the response body, all sharing `ErrorReply`. Derive from the zod schema with `z.infer` unless the schema coerces.

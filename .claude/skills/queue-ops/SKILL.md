@@ -10,7 +10,7 @@ Prefix: `docker compose exec rabbitmq rabbitmqctl`
 
 - Depths at a glance: `list_queues name messages messages_unacknowledged consumers`
 - Topology check: `list_exchanges name type` · `list_bindings source_name routing_key destination_name`
-- Who's connected: `list_consumers` (one per queue per worker replica)
+- Who's connected: `list_consumers` (one on `q.work` per worker replica)
 - Purge a queue (destructive): `purge_queue q.parked`
 
 Management HTTP API (same data as JSON, better for scripting):
@@ -40,7 +40,7 @@ Clear it once drained: `docker compose exec rabbitmq rabbitmqctl clear_parameter
 ## MinIO
 `mc` runs in a container so the host stays clean — alias once per shell session:
 ```
-alias mcx='docker run --rm --network media_pipeline_net -e MC_HOST_local=http://minioadmin:minioadmin@minio:9000 minio/mc'
+alias mcx='docker run --rm --network media_pipeline_net -e MC_HOST_local=http://minioadmin:minioadmin@minio:9000 minio/mc:RELEASE.2025-08-13T08-35-41Z'
 ```
 - Buckets: `mcx ls local`
 - A job's outputs: `mcx ls -r local/media-outputs/<jobId>/`
@@ -59,7 +59,7 @@ Prefix: `docker compose exec redis redis-cli`
 Browsing UI and a pub/sub monitor: RedisInsight (port listed in the `run-pipeline` skill).
 
 ## Triage quick paths
-- **Job stuck `queued`** → no consumers on its queue (`list_consumers`), or no workers running.
+- **Job stuck `queued`** → no consumers on `q.work` (`list_consumers`), or no workers running.
 - **Job stuck `processing`** → check worker logs; if the container died the message is unacked and gets redelivered when the connection drops.
 - **`q.retry` depth oscillating** → something is failing and retrying; peek `q.parked` after `MAX_ATTEMPTS` cycles.
 - **`master.m3u8` never appears** → a rendition failed: `renditionsDone < renditionsExpected` and the missing one is sitting in `q.retry` or `q.parked`.

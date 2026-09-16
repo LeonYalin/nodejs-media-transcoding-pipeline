@@ -97,13 +97,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (queue) (rate(media_retries_total[$__rate_interval])) * 60",
-          "legendFormat": "retry {{queue}}"
+          "expr": "sum by (routing_key) (rate(media_retries_total[$__rate_interval])) * 60",
+          "legendFormat": "retry {{routing_key}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (queue, reason) (rate(media_parked_total[$__rate_interval])) * 60",
-          "legendFormat": "park {{queue}} ({{reason}})"
+          "expr": "sum by (routing_key, reason) (rate(media_parked_total[$__rate_interval])) * 60",
+          "legendFormat": "park {{routing_key}} ({{reason}})"
         }
       ]
     },

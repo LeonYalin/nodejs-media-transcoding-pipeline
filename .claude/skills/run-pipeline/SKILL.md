@@ -23,8 +23,8 @@ ffmpeg is *not* installed on the host; it lives in the worker image.
 `npm run dev:api`
 
 ## Upload test media
-- Image: `curl -F file=@path/to/photo.jpg http://localhost:3000/uploads`
-- Video: `curl -F file=@path/to/clip.mp4 http://localhost:3000/uploads`
+- Image: `curl -F "file=@path/to/photo.jpg;type=image/jpeg" http://localhost:3000/uploads` (set `type=` — curl may send `application/octet-stream`, which returns 415)
+- Video: `curl -F "file=@path/to/clip.mp4;type=video/mp4" http://localhost:3000/uploads`
 - Poll a job: `curl http://localhost:3000/jobs/<jobId>`
 - Follow progress: `curl -N http://localhost:3000/jobs/<jobId>/events`
 

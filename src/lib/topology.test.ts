@@ -62,19 +62,19 @@ describe("assertTopology", () => {
   it("declares every queue durable, so a broker restart keeps queued jobs", async () => {
     const recorded = await run();
 
-    expect(recorded.queues).toHaveLength(5);
+    expect(recorded.queues).toHaveLength(3);
     for (const queue of recorded.queues) {
       expect(queue.options).toMatchObject({ durable: true });
     }
   });
 
-  it("dead-letters each work queue into the retry exchange", async () => {
+  it("makes the work queue quorum, dead-lettering into the retry exchange", async () => {
     const recorded = await run();
 
-    for (const name of [QUEUES.IMAGE, QUEUES.VIDEO_PLAN, QUEUES.VIDEO_RENDITION]) {
-      const queue = queueNamed(recorded, name);
-      expect(args(queue!.options)["x-dead-letter-exchange"]).toBe(EXCHANGES.RETRY);
-    }
+    expect(args(queueNamed(recorded, QUEUES.WORK)!.options)).toEqual({
+      "x-queue-type": "quorum",
+      "x-dead-letter-exchange": EXCHANGES.RETRY,
+    });
   });
 
   it("takes the retry TTL from config rather than hardcoding it", async () => {
@@ -112,18 +112,14 @@ describe("assertTopology", () => {
     });
   });
 
-  it("binds each work queue to its own routing key", async () => {
+  it("binds the work queue to every stage's routing key", async () => {
     const recorded = await run();
 
     expect(recorded.bindings).toEqual(
       expect.arrayContaining([
-        { queue: QUEUES.IMAGE, source: EXCHANGES.JOBS, pattern: ROUTING_KEYS.IMAGE_TRANSFORM },
-        { queue: QUEUES.VIDEO_PLAN, source: EXCHANGES.JOBS, pattern: ROUTING_KEYS.VIDEO_PLAN },
-        {
-          queue: QUEUES.VIDEO_RENDITION,
-          source: EXCHANGES.JOBS,
-          pattern: ROUTING_KEYS.VIDEO_RENDITION,
-        },
+        { queue: QUEUES.WORK, source: EXCHANGES.JOBS, pattern: ROUTING_KEYS.IMAGE_TRANSFORM },
+        { queue: QUEUES.WORK, source: EXCHANGES.JOBS, pattern: ROUTING_KEYS.VIDEO_PLAN },
+        { queue: QUEUES.WORK, source: EXCHANGES.JOBS, pattern: ROUTING_KEYS.VIDEO_RENDITION },
       ]),
     );
   });
@@ -133,6 +129,6 @@ describe("assertTopology", () => {
     await assertTopology(channel);
     await assertTopology(channel);
 
-    expect(recorded.queues).toHaveLength(10);
+    expect(recorded.queues).toHaveLength(6);
   });
 });

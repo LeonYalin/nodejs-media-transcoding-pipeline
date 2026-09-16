@@ -24,19 +24,19 @@ export const VideoJobMessageSchema = z.object({
 });
 
 /**
- * What `q.video.rendition` carries: the same video job plus the one rung this
+ * What `job.video.rendition` carries: the same video job plus the one rung this
  * message is responsible for encoding.
  *
  * There is no "plan vs rendition" discriminator in the payload -- the worker
- * already knows which stage it is running from *which queue delivered the
- * message*, so each consumer parses with the schema its own queue expects.
+ * already knows which stage it is running from *the message's routing key*, so
+ * it parses with the schema that routing key expects.
  * That keeps `type` down to the two values that actually describe the media.
  */
 export const VideoRenditionJobMessageSchema = VideoJobMessageSchema.extend({
   rendition: RenditionSchema,
 });
 
-/** The contract the API publishes and `q.image` / `q.video.plan` consume. */
+/** The contract the API publishes as `job.image.transform` / `job.video.plan`. */
 export const JobMessageSchema = z.discriminatedUnion("type", [
   ImageJobMessageSchema,
   VideoJobMessageSchema,

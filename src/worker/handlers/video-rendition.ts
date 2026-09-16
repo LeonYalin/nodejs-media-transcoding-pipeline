@@ -27,6 +27,8 @@ export interface VideoRenditionHandlerDeps {
   uploadsBucket: string;
   outputsBucket: string;
   segmentSeconds: number;
+  /** Aborted by the worker's second shutdown signal: kills a running ffmpeg. */
+  abortSignal: AbortSignal;
 }
 
 /**
@@ -40,6 +42,7 @@ export function createVideoRenditionHandler({
   uploadsBucket,
   outputsBucket,
   segmentSeconds,
+  abortSignal,
 }: VideoRenditionHandlerDeps) {
   return async function handleVideoRendition(message: VideoRenditionJobMessage): Promise<void> {
     const { jobId, sourceKey, rendition } = message;
@@ -74,6 +77,7 @@ export function createVideoRenditionHandler({
         outputDir,
         segmentSeconds,
         onProgress: reportProgress,
+        abortSignal,
       });
       // Drained before completion, so a late progress write cannot land after it.
       await reporting;

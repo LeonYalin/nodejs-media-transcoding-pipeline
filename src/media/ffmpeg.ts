@@ -87,14 +87,21 @@ export function buildHlsOutputOptions(
   ];
 }
 
-function run(command: ffmpeg.FfmpegCommand): Promise<void> {
-  return new Promise((resolve, reject) => {
+/**
+ * Aborting `abortSignal` kills ffmpeg outright: exiting Node alone would leave
+ * the child encoding on as an orphan.
+ */
+function run(command: ffmpeg.FfmpegCommand, abortSignal?: AbortSignal): Promise<void> {
+  const kill = () => command.kill("SIGKILL");
+  abortSignal?.addEventListener("abort", kill, { once: true });
+
+  return new Promise<void>((resolve, reject) => {
     // fluent-ffmpeg's error message already carries the tail of ffmpeg's stderr.
     command
       .on("end", () => resolve())
       .on("error", reject)
       .run();
-  });
+  }).finally(() => abortSignal?.removeEventListener("abort", kill));
 }
 
 export function probeVideo(file: string): Promise<ProbeResult> {
@@ -114,7 +121,12 @@ export function probeVideo(file: string): Promise<ProbeResult> {
   });
 }
 
-export function extractPoster(input: string, output: string, atSeconds: number): Promise<void> {
+export function extractPoster(
+  input: string,
+  output: string,
+  atSeconds: number,
+  abortSignal?: AbortSignal,
+): Promise<void> {
   return run(
     ffmpeg(input)
       .seekInput(atSeconds)
@@ -122,19 +134,21 @@ export function extractPoster(input: string, output: string, atSeconds: number):
       // `-update 1` tells the image muxer this is one file, not a numbered sequence.
       .outputOptions(["-q:v", "2", "-update", "1"])
       .output(output),
+    abortSignal,
   );
 }
 
 export interface TranscodeSettings extends HlsSettings {
   /** Fires on every ffmpeg progress line; callers throttle. */
   onProgress?: (percent: number) => void;
+  abortSignal?: AbortSignal;
 }
 
 /** Writes `index.m3u8` plus its segments into `outputDir`, which must already exist. */
 export function transcodeToHls(
   input: string,
   rendition: Rendition,
-  { onProgress, ...settings }: TranscodeSettings,
+  { onProgress, abortSignal, ...settings }: TranscodeSettings,
 ): Promise<void> {
   const command = ffmpeg(input)
     .outputOptions(buildHlsOutputOptions(rendition, settings))
@@ -145,5 +159,5 @@ export function transcodeToHls(
     if (onProgress && percent !== undefined && Number.isFinite(percent)) onProgress(percent);
   });
 
-  return run(command);
+  return run(command, abortSignal);
 }

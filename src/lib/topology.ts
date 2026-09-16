@@ -14,9 +14,7 @@ export const EXCHANGES = {
 } as const;
 
 export const QUEUES = {
-  IMAGE: "q.image",
-  VIDEO_PLAN: "q.video.plan",
-  VIDEO_RENDITION: "q.video.rendition",
+  WORK: "q.work",
   RETRY: "q.retry",
   PARKED: "q.parked",
 } as const;
@@ -33,7 +31,7 @@ export interface TopologyChannel {
 
 /**
  * Asserts the complete AMQP topology idempotently: durable topic exchanges, the
- * three work queues, the TTL-based retry path, and the terminal parked queue.
+ * work queue, the TTL-based retry path, and the terminal parked queue.
  *
  * NOTE: queue arguments are immutable once a queue exists. Changing
  * `RETRY_TTL_MS` in `.env` against a broker that already has `q.retry` will fail
@@ -45,20 +43,22 @@ export async function assertTopology(channel: TopologyChannel): Promise<void> {
   await channel.assertExchange(EXCHANGES.RETRY, "topic", { durable: true });
   await channel.assertExchange(EXCHANGES.PARKED, "topic", { durable: true });
 
-  // 2. Work queues. Each dead-letters into media.retry when a worker rejects a
-  //    message with requeue: false.
-  const workQueueOptions = {
+  // 2. One work queue for every stage. Dead-letters into media.retry when a
+  //    worker rejects a message with requeue: false.
+  //
+  //    One queue, because RabbitMQ 4.x denies global QoS: `prefetch(1, true)`
+  //    silently becomes per-consumer, so a worker consuming three queues holds
+  //    three jobs. With a single consumer, a plain prefetch(1) is one job.
+  //    Quorum, because it stamps `x-delivery-count` on deliveries a crashed
+  //    worker never settled -- the only way to cap a job that kills its worker.
+  await channel.assertQueue(QUEUES.WORK, {
     durable: true,
-    arguments: { "x-dead-letter-exchange": EXCHANGES.RETRY },
-  };
+    arguments: { "x-queue-type": "quorum", "x-dead-letter-exchange": EXCHANGES.RETRY },
+  });
 
-  await channel.assertQueue(QUEUES.IMAGE, workQueueOptions);
-  await channel.assertQueue(QUEUES.VIDEO_PLAN, workQueueOptions);
-  await channel.assertQueue(QUEUES.VIDEO_RENDITION, workQueueOptions);
-
-  await channel.bindQueue(QUEUES.IMAGE, EXCHANGES.JOBS, ROUTING_KEYS.IMAGE_TRANSFORM);
-  await channel.bindQueue(QUEUES.VIDEO_PLAN, EXCHANGES.JOBS, ROUTING_KEYS.VIDEO_PLAN);
-  await channel.bindQueue(QUEUES.VIDEO_RENDITION, EXCHANGES.JOBS, ROUTING_KEYS.VIDEO_RENDITION);
+  await channel.bindQueue(QUEUES.WORK, EXCHANGES.JOBS, ROUTING_KEYS.IMAGE_TRANSFORM);
+  await channel.bindQueue(QUEUES.WORK, EXCHANGES.JOBS, ROUTING_KEYS.VIDEO_PLAN);
+  await channel.bindQueue(QUEUES.WORK, EXCHANGES.JOBS, ROUTING_KEYS.VIDEO_RENDITION);
 
   // 3. Retry path.
   //
@@ -69,8 +69,7 @@ export async function assertTopology(channel: TopologyChannel): Promise<void> {
   //
   // q.retry has no consumers. A message simply expires and is dead-lettered to
   // media.jobs -- and RabbitMQ PRESERVES the original routing key across that
-  // hop, so it lands back in the queue it came from. That is why one shared
-  // retry queue serves all three work queues.
+  // hop, so it re-enters q.work still carrying its stage's routing key.
   await channel.assertQueue(QUEUES.RETRY, {
     durable: true,
     arguments: {
