@@ -82,7 +82,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 | Logging | `pino` (+ `pino-pretty` in dev) |
 | Metrics | `prom-client` |
 | Tracing | `@opentelemetry/sdk-node` + http/fastify/amqplib/ioredis/aws-sdk instrumentations → OTLP/HTTP → Jaeger |
-| Load testing | `autocannon` |
+| Load testing | `scripts/load.ts` — a plain `fetch` loop *(autocannon until step 12)* |
 | Testing | `vitest` (unit) + `testcontainers` (RabbitMQ, MinIO, Redis, worker image) |
 | Lint / format | `eslint` + `prettier` |
 | Env | Node built-in `--env-file=.env` (no `dotenv`), values zod-validated |
@@ -113,8 +113,8 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 ├── grafana/provisioning/…              # datasource + dashboards/{pipeline,runtime}.json   (step 10)
 ├── public/index.html                   # upload form + job table + SSE progress + hls.js player   (step 12)
 ├── scripts/                                                                                     (step 12)
-│   ├── infra-init.ts                   # assert MinIO buckets + AMQP topology; verify reachability
-│   └── load.ts                         # autocannon: concurrent multipart uploads, p99 + 202 rate
+│   ├── infra-init.ts                   # check MinIO buckets, assert AMQP topology, verify reachability
+│   └── load.ts                         # fetch loop: concurrent multipart uploads, p99 + 202 rate
 ├── tests/integration/                  # testcontainers: rabbitmq + minio + redis + built worker image   (step 13)
 └── src/
     ├── config/index.ts                 # env → zod → typed config singleton (only reader of process.env)
@@ -171,7 +171,7 @@ Single TypeScript package, two entrypoints — `api` (runs on the host) and `wor
 
 ## Execution model
 
-**Host runs:** the Fastify API under `tsx` (fast reload, and the target `autocannon` hammers), unit tests, and the helper scripts. No ffmpeg, no system packages.
+**Host runs:** the Fastify API under `tsx` (fast reload, and the target `npm run load` hammers), unit tests, and the helper scripts. No ffmpeg, no system packages.
 
 **Docker runs:** RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger — **and the workers**, as scalable compose replicas.
 
@@ -241,7 +241,7 @@ Keys are **deterministic** — a redelivered job overwrites its own outputs, whi
 - *(Fallback only if the static build ever misbehaves: install ffmpeg from Debian packages in the image instead. The host is never touched either way.)*
 
 ### 6. AMQP topology (`src/lib/topology.ts`) — DONE
-The single definition of every exchange, queue, binding and argument — asserted idempotently by both entrypoints on every (re)connect, through `connectAmqp`'s recovery `setup`. `scripts/infra-init.ts` will reuse it in step 12.
+The single definition of every exchange, queue, binding and argument — asserted idempotently by both entrypoints on every (re)connect, through `connectAmqp`'s recovery `setup`. `scripts/infra-init.ts` asserts it the same way, by connecting.
 
 | Object | Type | Args |
 |---|---|---|
@@ -374,11 +374,19 @@ Deviations, each found by probing a live `rabbitmq:4.3` broker:
 - **Left out for simplicity:** at-least-once dead-lettering, an explicit `x-delivery-limit` (the broker default of 20 is never reached), and per-stage queue depth. Per-stage retry and park rates are still on the dashboard.
 - **One-time broker cleanup:** a broker created before this step still has the three classic queues bound to `media.jobs`, collecting a copy of every job. Delete them once (or the RabbitMQ volume).
 
-### 12. Developer ergonomics + UI
-- npm scripts: `up` (`--scale worker=${WORKERS:-4}`), `down`, `build:worker`, `logs:worker`, `infra:init`, `dev:api`, `load`, `lint`, `format`, `typecheck`, `test`, `test:watch`, `test:integration`. `Makefile` mirrors them. *(Already in place: the npm scripts and `Makefile`. `scripts/` and `public/` are still empty, so `infra:init` and `load` do not run yet.)*
-- `scripts/infra-init.ts`: assert MinIO buckets + the full AMQP topology, then verify reachability of RabbitMQ, MinIO and Redis — the one command to run after `up`.
-- `scripts/load.ts`: `autocannon` firing concurrent multipart uploads of a fixture, reporting p99 latency and the `202` rate — the proof that ingest stays fast while workers churn.
+### 12. Developer ergonomics + UI — DONE
+- npm scripts: `up` (`--scale worker=${WORKERS:-4}`), `down`, `build:worker`, `logs:worker`, `infra:init`, `dev:api`, `dev` (the API: the only host process, since workers run in Docker; named to match the ETL project), `load`, `lint`, `format`, `typecheck`, `test`, `test:watch`, `test:integration`. `Makefile` mirrors them.
+- `scripts/infra-init.ts`: check MinIO buckets, assert the full AMQP topology, then verify reachability of RabbitMQ, MinIO and Redis — the one command to run after `up`.
+- `scripts/load.ts`: concurrent multipart uploads of a fixture, reporting p99 latency and the `202` rate — the proof that ingest stays fast while workers churn.
 - `public/index.html`: vanilla JS — upload form, job table polled from `GET /jobs`, per-job progress bars driven by SSE, and an `hls.js` player pointed at the finished `master.m3u8`. No framework, no build step.
+
+Deviations, each for a stated reason:
+- **The load script is a plain `fetch` loop, not `autocannon`.** autocannon ships no TypeScript types and needs a hand-built multipart body; `fetch` + `FormData` does the same in a few lines, and p50/p99 come from sorting the samples. The `autocannon` dependency was removed. Connections (20) and duration (30 s) are constants at the top of the script, not env vars, since only `src/config` reads `process.env`. Measured with 3 workers: ~1,080 uploads/s, 100% `202`, p99 31 ms, while `q.work` backed up to 27k jobs.
+- **The fixture is generated with `sharp` at start-up**, so no binary is committed.
+- **The browser reads outputs straight from MinIO.** `minio-init` makes `media-outputs` public-read (`mc anonymous set download`), and MinIO allows CORS by default, so thumbnails, posters and HLS load from `http://localhost:9000/media-outputs/…` with no proxy route. Local dev only; a real deployment would use presigned URLs.
+- **`infra-init` checks the buckets rather than creating them.** `minio-init` owns bucket creation *and* the public-read policy; a bucket created by the script would lack the policy and the UI would get 403s. It also does not re-assert the topology: `connectAmqp` already does that on connect.
+- **The UI follows at most 4 `processing` jobs over SSE**; everything else updates from the 3 s poll. Browsers allow ~6 HTTP/1.1 connections per host, so a stream per unfinished job starved the poll and the upload request under a backlog (found in review).
+- **`app.ts` registers `@fastify/static` unconditionally**, now that `public/` exists.
 
 ### 13. Tests
 - **Unit** (`*.test.ts` beside the source, no infra): `media/ladder` (no upscaling, tiny sources, exact rungs), `media/hls` (playlist text), `worker/retry` (the full `x-death` matrix: absent header, first rejection, mixed `rejected`/`expired` entries, non-retryable error, max attempts), `domain/*` schemas, `config` validation, `worker/consumer`, `worker/workspace`, the pure parts of `media/ffmpeg`, and the image handler against real sharp with fake repositories. *(All of these exist.)* The video handlers have no unit tests — ffmpeg is not on the host — so the integration suite is their test.

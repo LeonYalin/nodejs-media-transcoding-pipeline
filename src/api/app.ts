@@ -1,6 +1,5 @@
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fastify, type FastifyBaseLogger, type FastifyError, type FastifyInstance } from "fastify";
@@ -57,11 +56,7 @@ export async function createApp(deps: AppDeps): Promise<FastifyInstance> {
     throwFileSizeLimit: false,
   });
 
-  // public/ is populated in step 12. @fastify/static throws on a missing root,
-  // so guard it rather than coupling the API's boot to the UI step.
-  if (existsSync(PUBLIC_DIR)) {
-    await app.register(fastifyStatic, { root: PUBLIC_DIR, prefix: "/" });
-  }
+  await app.register(fastifyStatic, { root: PUBLIC_DIR, prefix: "/" });
 
   // No route generic to attach here, so each payload is annotated at the point
   // of construction instead -- same contract, still compile-checked.

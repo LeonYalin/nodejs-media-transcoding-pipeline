@@ -122,9 +122,9 @@ upload slow?" is unanswerable from logs alone.
 cp .env.example .env   # defaults work out of the box
 npm install
 npm run up             # infra + 4 transcode workers (WORKERS=8 npm run up to change)
-npm run infra:init     # creates buckets + AMQP topology, verifies connectivity
+npm run infra:init     # asserts AMQP topology, verifies buckets + connectivity
 
-npm run dev:api        # the API on the host
+npm run dev            # the API on the host (workers already run in Docker)
 ```
 
 Then open:

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Media pipeline</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
+    <style>
+      body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; color: #222; }
+      table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #ddd; vertical-align: middle; }
+      progress { width: 140px; }
+      img { max-height: 48px; display: block; }
+      video { width: 100%; max-width: 720px; margin-top: 16px; background: #000; }
+      .error { color: #b00020; }
+      .muted { color: #777; font-family: monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Media pipeline</h1>
+
+    <form id="upload-form">
+      <input type="file" name="file" accept="image/*,video/*" required />
+      <button type="submit">Upload</button>
+      <span id="upload-result"></span>
+    </form>
+
+    <video id="player" controls hidden></video>
+
+    <table>
+      <thead>
+        <tr><th>Job</th><th>Type</th><th>Status</th><th>Progress</th><th>Created</th><th>Output</th></tr>
+      </thead>
+      <tbody id="jobs"></tbody>
+    </table>
+
+    <script>
+      // media-outputs is public-read (see minio-init in docker-compose.yml).
+      const OUTPUTS_URL = "http://localhost:9000/media-outputs/";
+      const POLL_MS = 3000;
+      const MAX_STREAMS = 4;
+
+      const jobsBody = document.getElementById("jobs");
+      const player = document.getElementById("player");
+      /** jobId -> the open EventSource for a job that is still running. */
+      const streams = new Map();
+      /** jobId -> the latest record, from polling or SSE. */
+      const records = new Map();
+
+      document.getElementById("upload-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const result = document.getElementById("upload-result");
+        result.textContent = "Uploading...";
+        result.className = "";
+
+        const response = await fetch("/uploads", { method: "POST", body: new FormData(event.target) });
+        const body = await response.json();
+        if (response.status === 202) {
+          result.textContent = `Accepted ${body.jobId}`;
+          event.target.reset();
+          await refreshJobs();
+        } else {
+          result.textContent = `${response.status}: ${body.error}`;
+          result.className = "error";
+        }
+      });
+
+      async function refreshJobs() {
+        const response = await fetch("/jobs");
+        const { jobs } = await response.json();
+        for (const job of jobs) {
+          records.set(job.jobId, job);
+          if (job.status === "processing") followJob(job.jobId);
+        }
+        render(jobs.map((job) => job.jobId));
+      }
+
+      function isRunning(job) {
+        return job.status === "queued" || job.status === "processing";
+      }
+
+      /**
+       * Live progress over SSE, closed once the job settles. Capped: browsers
+       * allow ~6 connections per host, and open streams would starve the poll
+       * and uploads. Jobs beyond the cap still update through polling.
+       */
+      function followJob(jobId) {
+        if (streams.has(jobId) || streams.size >= MAX_STREAMS) return;
+        const stream = new EventSource(`/jobs/${jobId}/events`);
+        streams.set(jobId, stream);
+        const stop = () => {
+          stream.close();
+          streams.delete(jobId);
+        };
+        stream.onerror = stop;
+        stream.onmessage = (event) => {
+          const job = JSON.parse(event.data);
+          records.set(jobId, job);
+          renderRow(job);
+          if (!isRunning(job)) stop();
+        };
+      }
+
+      function render(jobIds) {
+        jobsBody.replaceChildren();
+        for (const jobId of jobIds) renderRow(records.get(jobId));
+      }
+
+      function renderRow(job) {
+        const row = document.createElement("tr");
+        row.id = `job-${job.jobId}`;
+        row.append(
+          cell(job.jobId.slice(0, 8), "muted"),
+          cell(job.type),
+          cell(job.status, job.status === "failed" ? "error" : ""),
+          progressCell(job),
+          cell(new Date(job.createdAt).toLocaleTimeString()),
+          outputCell(job),
+        );
+        const existing = document.getElementById(row.id);
+        if (existing) existing.replaceWith(row);
+        else jobsBody.append(row);
+      }
+
+      function cell(text, className = "") {
+        const td = document.createElement("td");
+        td.textContent = text;
+        td.className = className;
+        return td;
+      }
+
+      function progressCell(job) {
+        const td = document.createElement("td");
+        const bar = document.createElement("progress");
+        bar.max = 100;
+        bar.value = job.progress;
+        td.append(bar, ` ${Math.round(job.progress)}%`);
+        return td;
+      }
+
+      function outputCell(job) {
+        const td = document.createElement("td");
+        if (job.status === "failed") {
+          td.textContent = job.error ?? "";
+          td.className = "error";
+          return td;
+        }
+        if (job.status !== "completed") return td;
+
+        if (job.type === "image") {
+          const link = document.createElement("a");
+          link.href = `${OUTPUTS_URL}${job.jobId}/image/full.webp`;
+          link.target = "_blank";
+          const thumb = document.createElement("img");
+          thumb.src = `${OUTPUTS_URL}${job.jobId}/image/thumb.webp`;
+          link.append(thumb);
+          td.append(link);
+        } else {
+          const poster = document.createElement("img");
+          poster.src = `${OUTPUTS_URL}${job.jobId}/poster.jpg`;
+          const button = document.createElement("button");
+          button.textContent = "Play";
+          button.onclick = () => play(`${OUTPUTS_URL}${job.jobId}/hls/master.m3u8`);
+          td.append(poster, button);
+        }
+        return td;
+      }
+
+      let hls = null;
+      function play(masterUrl) {
+        player.hidden = false;
+        hls?.destroy();
+        hls = null;
+        if (window.Hls?.isSupported()) {
+          hls = new Hls();
+          hls.loadSource(masterUrl);
+          hls.attachMedia(player);
+        } else {
+          // Safari plays HLS natively.
+          player.src = masterUrl;
+        }
+        player.play();
+      }
+
+      refreshJobs();
+      setInterval(refreshJobs, POLL_MS);
+    </script>
+  </body>
+</html>

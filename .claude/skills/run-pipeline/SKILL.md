@@ -17,10 +17,10 @@ ffmpeg is *not* installed on the host; it lives in the worker image.
 - Down (keep data): `npm run down` — Down + wipe volumes: `docker compose down -v`
 
 ## Initialize buckets + queues
-`npm run infra:init`   # asserts media-uploads / media-outputs and the full AMQP topology, then pings RabbitMQ, MinIO, Redis
+`npm run infra:init`   # checks media-uploads / media-outputs exist (minio-init creates them), asserts the AMQP topology, pings Redis
 
 ## Run the API (host)
-`npm run dev:api`
+`npm run dev`   # the API (alias of `dev:api`; workers already run in Docker)
 
 ## Upload test media
 - Image: `curl -F "file=@path/to/photo.jpg;type=image/jpeg" http://localhost:3000/uploads` (set `type=` — curl may send `application/octet-stream`, which returns 415)
@@ -29,7 +29,7 @@ ffmpeg is *not* installed on the host; it lives in the worker image.
 - Follow progress: `curl -N http://localhost:3000/jobs/<jobId>/events`
 
 ## Load test
-`npm run load`   # autocannon, concurrent multipart uploads; reports p99 + 202 rate
+`npm run load`   # 20 concurrent image uploads for 30s (constants in scripts/load.ts); reports p50/p99 + 202 rate
 Tune: `WORKERS=8 npm run up` first, then re-run and watch queue depth drain in Grafana.
 
 ## One-off ffmpeg / ffprobe (host stays clean)
@@ -37,7 +37,7 @@ Tune: `WORKERS=8 npm run up` first, then re-run and watch queue depth drain in G
 Mount a host file to inspect it: add `-v "$PWD/fixtures:/fixtures"` and point at `/fixtures/<file>`.
 
 ## Endpoints (defaults)
-- API + dashboard: `http://localhost:3000` — `POST /uploads`, `GET /jobs`, `/jobs/:id`, `/jobs/:id/events`, `/health`, `/metrics`
+- API + UI: `http://localhost:3000` (upload, live progress, image thumbnails, HLS player) — `POST /uploads`, `GET /jobs`, `/jobs/:id`, `/jobs/:id/events`, `/health`, `/metrics`
 - RabbitMQ management: `http://localhost:15672` (media/media) · broker metrics `:15692/metrics`
 - MinIO console: `http://localhost:9001` · S3 endpoint `http://localhost:9000`
 - RedisInsight: `http://localhost:5540`
