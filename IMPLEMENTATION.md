@@ -2,7 +2,7 @@
 
 > This document is the executable build spec. The Claude Code config files
 > (`CLAUDE.md`, `.claude/`, `.mcp.json`) described in Step 14 already exist in the
-> repo. Steps 1–9 are implemented and were re-checked against the code; where the
+> repo. Steps 1–14 are implemented and were re-checked against the code; where the
 > code departs from the original text, the deviation is recorded under its step.
 
 ## Context
@@ -115,7 +115,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 ├── scripts/                                                                                     (step 12)
 │   ├── infra-init.ts                   # check MinIO buckets, assert AMQP topology, verify reachability
 │   └── load.ts                         # fetch loop: concurrent multipart uploads, p99 + 202 rate
-├── tests/integration/                  # testcontainers: rabbitmq + minio + redis + built worker image   (step 13)
+├── tests/integration/                  # testcontainers: rabbitmq + minio + redis + built worker image
 └── src/
     ├── config/index.ts                 # env → zod → typed config singleton (only reader of process.env)
     ├── domain/
@@ -388,10 +388,20 @@ Deviations, each for a stated reason:
 - **The UI follows at most 4 `processing` jobs over SSE**; everything else updates from the 3 s poll. Browsers allow ~6 HTTP/1.1 connections per host, so a stream per unfinished job starved the poll and the upload request under a backlog (found in review).
 - **`app.ts` registers `@fastify/static` unconditionally**, now that `public/` exists.
 
-### 13. Tests
+### 13. Tests — DONE
 - **Unit** (`*.test.ts` beside the source, no infra): `media/ladder` (no upscaling, tiny sources, exact rungs), `media/hls` (playlist text), `worker/retry` (the full `x-death` matrix: absent header, first rejection, mixed `rejected`/`expired` entries, non-retryable error, max attempts), `domain/*` schemas, `config` validation, `worker/consumer`, `worker/workspace`, the pure parts of `media/ffmpeg`, and the image handler against real sharp with fake repositories. *(All of these exist.)* The video handlers have no unit tests — ffmpeg is not on the host — so the integration suite is their test.
 - **Integration** (`tests/integration/`): boot RabbitMQ + MinIO + Redis containers and build the **worker image** via `GenericContainer.fromDockerfile` (cached between runs). Drive `createApp()` with a real upload, then assert: derivatives land in `media-outputs`; the HLS master playlist references every expected rung; a handler forced to fail increments `x-death` and reappears after the TTL; it parks in `q.parked` after `MAX_ATTEMPTS`; and SIGTERM mid-transcode leads to redelivery with no loss.
 - **No module mocking** — `vi.mock` stays at zero. Inject a fake, or use a real container. Fakes only for what a real dependency can't do on cue (failure injection, timer control).
+
+Deviations, each for a stated reason:
+- **The layout copies the ETL project:** `globalSetup.ts` boots the infra once and `provide`s the URLs; `helpers.ts` holds `waitFor`, `startWorker` and `startApi`; one file per concern (`pipeline.test.ts`, `retry.test.ts`). Files run serially against the one set of containers.
+- **Plain `GenericContainer` for all three datastores**, using the same pinned images as compose. `@testcontainers/rabbitmq` was removed: it hardcodes `guest`, which cannot log in from the worker containers. Everything shares one Docker network, so workers reach `rabbitmq` / `minio` / `redis` by alias while the test process uses mapped ports.
+- **Fixtures are generated, not committed.** The image comes from `sharp`; the two videos (4 s 720p for the ladder, 120 s 360p for the kill test) are made by the worker image's own ffmpeg in `globalSetup`, so the host still never needs it.
+- **`createApp` runs in-process on a free port**, wired as `api/index.ts` wires it, and uploads go through real `fetch` + `FormData`. The test reads Redis and MinIO through the same repositories.
+- **The retry test uses the real consumer in-process with a handler that always fails**, rather than a worker container: that is the only way to fail a handler on cue. It asserts every attempt ran, each retry waited out the TTL, the job is marked failed, and the parked copy carries `park-error` and two `q.work` rejections. `RETRY_TTL_MS` is 1 s in both the test process and the workers, since queue arguments are fixed by whoever asserts first.
+- **"No loss" kills the worker instead of sending SIGTERM.** A SIGTERM drains and acks, so nothing would be redelivered. The test waits for encode progress, stops the container with no grace period, asserts the job is still `processing`, starts a fresh worker, and expects the job to complete.
+- **Not covered here:** a corrupt upload parking as non-retryable (unit-tested in `consumer.test.ts`, and checked end-to-end by `transcode-verifier`).
+- Run time: about 20 s once the worker image is cached. The first run also builds the image.
 
 ### 14. Claude Code configuration (DRY, token-lean) — DONE
 

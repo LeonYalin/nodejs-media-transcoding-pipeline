@@ -2,7 +2,7 @@
 
 A **Fastify API** streams uploads straight into **MinIO** and returns `202 Accepted` → a durable **RabbitMQ** job is published with publisher confirms → N **worker containers** transcode images with `sharp` and video into an **HLS ladder** with `ffmpeg`, writing derivatives back to MinIO. **Redis** holds job state and feeds live progress to the browser over SSE. Prometheus + Grafana + Jaeger for observability.
 
-> Status: greenfield. Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
+> Status: complete (all 14 steps). Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Data flow
 `POST /uploads → (stream) MinIO media-uploads → confirm-publish to media.jobs → q.work (image | video plan → fan-out video renditions, by routing key) → sharp/ffmpeg → MinIO media-outputs → Redis + SSE`

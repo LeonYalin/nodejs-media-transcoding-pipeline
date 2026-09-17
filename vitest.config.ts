@@ -35,12 +35,15 @@ export default defineConfig({
           name: "integration",
           environment: "node",
           include: ["tests/integration/**/*.test.ts"],
+          globalSetup: ["./tests/integration/globalSetup.ts"],
           // Containers are slow to boot and the suites share one RabbitMQ/MinIO/
           // Redis set, so run files serially with generous timeouts.
           testTimeout: 120_000,
           hookTimeout: 180_000,
           fileParallelism: false,
-          env: baseEnv,
+          // Must match the worker containers (tests/integration/helpers.ts):
+          // q.retry's TTL is fixed by whichever process asserts it first.
+          env: { ...baseEnv, RETRY_TTL_MS: "1000", MAX_ATTEMPTS: "3" },
         },
       },
     ],

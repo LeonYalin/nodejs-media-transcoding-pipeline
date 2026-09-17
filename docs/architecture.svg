@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 640" width="1240" height="640" role="img" aria-label="Architecture diagram: the browser uploads to a Fastify API, which streams the file into MinIO, records the job in Redis and confirm-publishes it to RabbitMQ. One quorum work queue feeds N worker containers at prefetch 1, which transcode with sharp and ffmpeg and write derivatives back to MinIO. Failures go through a TTL retry queue and finally to a parked queue. Workers report progress to Redis, which the API relays to the browser over SSE. Metrics go to Prometheus and Grafana, traces to Jaeger.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <style>
+    .t   { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .h1  { font-size: 25px; font-weight: 700; fill: #0f172a; }
+    .sub { font-size: 14px; fill: #64748b; }
+    .nt  { font-size: 16px; font-weight: 700; fill: #0f172a; }
+    .nd  { font-size: 12px; fill: #475569; }
+    .lbl { font-size: 11px; fill: #64748b; font-style: italic; }
+    .bt  { font-size: 13px; font-weight: 700; fill: #334155; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="640" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <text class="t h1" x="620" y="42" text-anchor="middle">Distributed Media Transcoding Pipeline</text>
+  <text class="t sub" x="620" y="68" text-anchor="middle">Fastify → RabbitMQ → worker containers (sharp · ffmpeg) → MinIO · 202 in milliseconds, transcode in minutes</text>
+
+  <!-- ===== stream-to-storage path, above the main row ===== -->
+  <polyline points="367,140 367,100 1125,100 1125,138" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="746" y="93" text-anchor="middle">stream upload → media-uploads (never buffered)</text>
+
+  <!-- ===== main flow ===== -->
+
+  <!-- Browser -->
+  <rect x="20" y="140" width="190" height="130" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="2"/>
+  <text class="t nt" x="115" y="175" text-anchor="middle">Browser UI</text>
+  <text class="t nd" x="115" y="202" text-anchor="middle">upload form</text>
+  <text class="t nd" x="115" y="224" text-anchor="middle">live progress (SSE)</text>
+  <text class="t nd" x="115" y="246" text-anchor="middle">hls.js player</text>
+
+  <!-- API -->
+  <rect x="272" y="140" width="190" height="130" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text class="t nt" x="367" y="175" text-anchor="middle">Fastify API</text>
+  <text class="t nd mono" x="367" y="202" text-anchor="middle">POST /uploads</text>
+  <text class="t nd" x="367" y="224" text-anchor="middle">confirm, then 202</text>
+  <text class="t nd mono" x="367" y="246" text-anchor="middle">/jobs/:id/events</text>
+
+  <!-- RabbitMQ -->
+  <rect x="525" y="140" width="190" height="130" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text class="t nt" x="620" y="175" text-anchor="middle">RabbitMQ</text>
+  <text class="t nd mono" x="620" y="202" text-anchor="middle">media.jobs → q.work</text>
+  <text class="t nd" x="620" y="224" text-anchor="middle">quorum · durable</text>
+  <text class="t nd" x="620" y="246" text-anchor="middle">image · plan · rendition</text>
+
+  <!-- Workers -->
+  <rect x="777" y="140" width="190" height="130" rx="10" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text class="t nt" x="872" y="175" text-anchor="middle">Workers ×N</text>
+  <text class="t nd" x="872" y="202" text-anchor="middle">sharp · ffmpeg HLS ladder</text>
+  <text class="t nd" x="872" y="224" text-anchor="middle">1 job per container</text>
+  <text class="t nd" x="872" y="246" text-anchor="middle">ack after upload</text>
+
+  <!-- MinIO -->
+  <rect x="1030" y="140" width="190" height="130" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="2"/>
+  <text class="t nt" x="1125" y="175" text-anchor="middle">MinIO (S3)</text>
+  <text class="t nd mono" x="1125" y="202" text-anchor="middle">media-uploads</text>
+  <text class="t nd mono" x="1125" y="224" text-anchor="middle">media-outputs</text>
+  <text class="t nd" x="1125" y="246" text-anchor="middle">deterministic keys</text>
+
+  <!-- flow arrows -->
+  <line x1="210" y1="205" x2="270" y2="205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="241" y="194" text-anchor="middle">multipart</text>
+
+  <line x1="462" y1="205" x2="523" y2="205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="493" y="194" text-anchor="middle">publish</text>
+
+  <line x1="715" y1="205" x2="775" y2="205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="745" y="194" text-anchor="middle">prefetch 1</text>
+
+  <line x1="969" y1="205" x2="1028" y2="205" stroke="#475569" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="998" y="194" text-anchor="middle">get · put</text>
+
+  <!-- plan stage fans out rendition jobs -->
+  <path d="M 800 140 C 785 116, 705 116, 690 138" fill="none" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text class="t lbl" x="746" y="156" text-anchor="middle">fan-out</text>
+
+  <!-- ===== retry / park branch ===== -->
+  <line x1="815" y1="270" x2="690" y2="348" stroke="#b45309" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-amber)"/>
+  <text class="t lbl" x="770" y="322" fill="#b45309">nack</text>
+
+  <rect x="525" y="350" width="190" height="60" rx="10" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text class="t nt" x="620" y="375" text-anchor="middle" font-size="14">Retry queue</text>
+  <text class="t nd mono" x="620" y="396" text-anchor="middle">q.retry · TTL 10s</text>
+
+  <line x1="600" y1="350" x2="600" y2="272" stroke="#b45309" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-amber)"/>
+  <text class="t lbl" x="592" y="316" text-anchor="end" fill="#b45309">expires → back</text>
+
+  <line x1="935" y1="270" x2="1060" y2="348" stroke="#dc2626" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-red)"/>
+  <text class="t lbl" x="1040" y="298" fill="#dc2626">non-retryable or</text>
+  <text class="t lbl" x="1040" y="312" fill="#dc2626">MAX_ATTEMPTS</text>
+
+  <rect x="1030" y="350" width="190" height="60" rx="10" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text class="t nt" x="1125" y="375" text-anchor="middle" font-size="14">Parked (terminal)</text>
+  <text class="t nd mono" x="1125" y="396" text-anchor="middle">q.parked · job failed</text>
+
+  <!-- ===== job state + live progress ===== -->
+  <line x1="367" y1="270" x2="367" y2="348" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-violet)"/>
+  <text class="t lbl" x="377" y="316" fill="#7c3aed">job record</text>
+
+  <rect x="272" y="350" width="190" height="60" rx="10" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text class="t nt" x="367" y="375" text-anchor="middle" font-size="14">Redis</text>
+  <text class="t nd" x="367" y="396" text-anchor="middle">job state · pub/sub</text>
+
+  <polyline points="872,270 872,436 367,436 367,412" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-violet)"/>
+  <text class="t lbl" x="620" y="429" text-anchor="middle" fill="#7c3aed">progress · completed</text>
+
+  <line x1="272" y1="380" x2="140" y2="272" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-violet)"/>
+  <text class="t lbl" x="110" y="330" fill="#7c3aed">pub/sub → SSE</text>
+
+  <!-- ===== observability band ===== -->
+  <rect x="20" y="470" width="1200" height="148" rx="12" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="7 5"/>
+  <text class="t bt" x="44" y="500">Observability — metrics for every process, one trace from upload to transcode</text>
+
+  <rect x="44" y="520" width="260" height="62" rx="9" fill="#ffffff" stroke="#94a3b8" stroke-width="2"/>
+  <text class="t nd" x="174" y="545" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">api · workers · rabbitmq</text>
+  <text class="t nd mono" x="174" y="566" text-anchor="middle">/metrics</text>
+
+  <line x1="304" y1="551" x2="364" y2="551" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow-slate)"/>
+
+  <rect x="366" y="520" width="190" height="62" rx="9" fill="#ffedd5" stroke="#f97316" stroke-width="2"/>
+  <text class="t nt" x="461" y="547" text-anchor="middle" font-size="15">Prometheus</text>
+  <text class="t nd" x="461" y="567" text-anchor="middle">workers found by DNS</text>
+
+  <line x1="556" y1="551" x2="616" y2="551" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow-slate)"/>
+
+  <rect x="618" y="520" width="230" height="62" rx="9" fill="#ffe4e6" stroke="#f43f5e" stroke-width="2"/>
+  <text class="t nt" x="733" y="547" text-anchor="middle" font-size="15">Grafana</text>
+  <text class="t nd" x="733" y="567" text-anchor="middle">pipeline · runtime dashboards</text>
+
+  <rect x="890" y="520" width="306" height="62" rx="9" fill="#e0f2fe" stroke="#0ea5e9" stroke-width="2"/>
+  <text class="t nt" x="1043" y="547" text-anchor="middle" font-size="15">Jaeger</text>
+  <text class="t nd" x="1043" y="567" text-anchor="middle">OpenTelemetry: API → AMQP headers → worker</text>
+</svg>
