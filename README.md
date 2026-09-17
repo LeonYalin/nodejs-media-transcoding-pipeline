@@ -1,6 +1,6 @@
 ## Distributed Media Transcoding Pipeline (RabbitMQ + MinIO + ffmpeg)
 
-![Architecture: browser → Fastify API streaming into MinIO → RabbitMQ quorum work queue → worker containers (sharp, ffmpeg HLS) → MinIO, with a TTL retry queue, a parked queue, Redis job state feeding SSE progress, and a Prometheus/Grafana/Jaeger observability band](docs/architecture.svg)
+![Architecture: browser → Fastify API streaming into MinIO → RabbitMQ quorum work queue → worker containers (sharp, ffmpeg HLS) → MinIO, with a TTL retry queue, a parked queue, Redis job state feeding SSE progress, MinIO bucket events invoking Lambda functions, and a Prometheus/Grafana/Jaeger observability band](docs/architecture.svg)
 
 > **Host requirements: Docker and Node. That's it.** `ffmpeg` lives inside the worker image.
 > Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
@@ -80,12 +80,25 @@ path; a second signal kills ffmpeg immediately.
     instrumentation carries trace context **through the message headers**, so one Jaeger trace
     spans the HTTP upload, the publish, and the worker's processing in another container.
 
+**9. Event-driven functions (S3 → Lambda)**
+
+Not all work belongs on a queue. Small, idempotent reactions to "an object landed" are the classic
+Lambda use case.
+*   **The Instrument:** MinIO bucket notifications + AWS's own Lambda image
+    (`public.ecr.aws/lambda/nodejs:24`, with the Runtime Interface Emulator), all local.
+*   **The Method:** MinIO posts the standard S3 event JSON to the function's invoke URL. The
+    `metadata` function writes `source.json` for every upload (dimensions from a 64 KB ranged
+    read); the `placeholder` function writes a 20 px blurred preview whenever `full.webp`
+    lands. The handlers are plain `handler(event)` exports that would deploy to AWS unchanged,
+    and MinIO keeps undelivered events on disk until a stopped function comes back.
+
 ### Tech stack
 
 *   **Queue/Storage/State:** RabbitMQ (topic exchange, quorum queue, DLX, TTL delay queue),
     MinIO (S3-compatible), Redis (job state + pub/sub).
 *   **Node libraries:** `fastify`, `@fastify/multipart`, `amqplib`, `@aws-sdk/client-s3` +
     `lib-storage`, `sharp`, `fluent-ffmpeg`, `ioredis`, `zod`, `pino`, `prom-client`.
+*   **Functions:** AWS Lambda Node.js 24 image, triggered by MinIO bucket events.
 *   **Observability:** Prometheus, Grafana, Jaeger, RabbitMQ management UI, MinIO console,
     RedisInsight.
 *   **Testing:** `vitest` (unit) + `testcontainers` (RabbitMQ + MinIO + Redis + the worker image).
@@ -134,5 +147,5 @@ can't do on cue: failure injection and timer control.
 
 ### Status
 
-Complete — all 14 build steps in [IMPLEMENTATION.md](IMPLEMENTATION.md) are done, from infra
-and topology through the workers, reliability, UI, and the test suite.
+Complete — all 15 build steps in [IMPLEMENTATION.md](IMPLEMENTATION.md) are done, from infra
+and topology through the workers, reliability, UI, the test suite, and Lambda functions.

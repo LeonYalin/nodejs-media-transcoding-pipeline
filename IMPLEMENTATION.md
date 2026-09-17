@@ -2,7 +2,7 @@
 
 > This document is the executable build spec. The Claude Code config files
 > (`CLAUDE.md`, `.claude/`, `.mcp.json`) described in Step 14 already exist in the
-> repo. Steps 1–14 are implemented and were re-checked against the code; where the
+> repo. Steps 1–15 are implemented and were re-checked against the code; where the
 > code departs from the original text, the deviation is recorded under its step.
 
 ## Context
@@ -62,7 +62,7 @@ Video fan-out: the plan stage (ffprobe, fast) records the ladder + renditionsExp
 Barrier:      each rendition marks its own entry in job:{id}:renditions; whoever sees N done writes master.m3u8.
 
 Infra (docker compose): RabbitMQ(+management,+prometheus), MinIO, Redis, RedisInsight,
-Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
+Prometheus, Grafana, Jaeger, worker×N, fn-metadata + fn-placeholder (Lambda).   Host (npm): api, scripts, tests.
 ```
 
 ---
@@ -86,7 +86,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 | Testing | `vitest` (unit) + `testcontainers` (RabbitMQ, MinIO, Redis, worker image) |
 | Lint / format | `eslint` + `prettier` |
 | Env | Node built-in `--env-file=.env` (no `dotenv`), values zod-validated |
-| Infra | `docker compose`: RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger, worker replicas |
+| Infra | `docker compose`: RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger, worker replicas, two Lambda function containers (step 15) |
 
 ### Pinned images (all verified to exist, multi-arch incl. arm64)
 | Image | Why this tag |
@@ -111,6 +111,7 @@ Prometheus, Grafana, Jaeger, worker×N.   Host (npm): api, scripts, tests.
 ├── rabbitmq/enabled_plugins            # rabbitmq_management, rabbitmq_prometheus
 ├── prometheus/prometheus.yml           # api (host.docker.internal), worker (dns_sd), rabbitmq
 ├── grafana/provisioning/…              # datasource + dashboards/{pipeline,runtime}.json   (step 10)
+├── functions/                          # Lambda handlers (metadata, placeholder) + AWS Lambda image   (step 15)
 ├── public/index.html                   # upload form + job table + SSE progress + hls.js player   (step 12)
 ├── scripts/                                                                                     (step 12)
 │   ├── infra-init.ts                   # check MinIO buckets, assert AMQP topology, verify reachability
@@ -418,6 +419,20 @@ Deviations, each for a stated reason:
 - **`.mcp.json`** — Grafana + Redis MCP servers (Docker-based, project-scoped). There is **no** published RabbitMQ or MinIO/S3 MCP server, so those are covered by the `queue-ops` skill via their CLIs and HTTP APIs rather than a guessed image. Tool schemas load on demand via Claude Code's tool search, so they add negligible per-turn cost.
 
 This structure is the token-saving lesson: `CLAUDE.md` loads every turn so it stays small; heavier procedural detail lives in skills that load **on demand**; agents run in isolated context and pull only the skill(s) they need.
+
+### 15. Lambda functions (MinIO bucket events → AWS Lambda runtime) — DONE
+Added after the build, to try the production **"S3 ObjectCreated → Lambda"** pattern entirely locally. The queue pipeline is unchanged.
+
+- **Runtime:** `functions/` is one package built into AWS's own `public.ecr.aws/lambda/nodejs:24` image, which bundles the Runtime Interface Emulator (the Lambda invoke API on :8080). Two compose services run the same image with different handlers (`command: ["dist/metadata.handler"]` / `["dist/placeholder.handler"]`) — the container-image pattern AWS uses. The handlers are TypeScript compiled with `tsc` in the image build, exported as `handler(event)`, and would deploy unchanged.
+- **Trigger:** MinIO webhook targets (`MINIO_NOTIFY_WEBHOOK_*_METADATA` / `_PLACEHOLDER`) point at each function's invoke URL, `http://fn-…:8080/2015-03-31/functions/function/invocations`. `minio-init` adds the rules with `mc event add --ignore-existing`: every `put` on `media-uploads` → metadata; `put` on `media-outputs` with suffix `image/full.webp` → placeholder. MinIO sends the same S3 event JSON AWS does (`Records[].s3.bucket.name / object.key`, keys URL-encoded).
+- **`metadata`** writes `media-outputs/{jobId}/source.json`: size, type, ETag, upload time, and for images width/height/format from a **ranged GET of the first 64 KB** — headers are enough, verified on a 6 MB JPEG. Video gets no dimensions: the Lambda image has no ffprobe.
+- **`placeholder`** streams `full.webp` through sharp into a ~70-byte, 20 px blurred `image/placeholder.webp`. The suffix filter is what keeps its own write from re-triggering it. The UI paints it behind the thumbnail and links `source.json` as `info`.
+- **Delivery:** each target has a queue dir, so MinIO persists events while a function is unreachable and resends them — verified: `fn-placeholder` stopped, image uploaded, placeholder written ~4 s after the function started again.
+- **Separate deployables:** functions use the S3 SDK, `process.env` and `console` directly rather than `src/lib` — the one exception to the module rules (recorded in CLAUDE.md). `S3_ENDPOINT` is set only locally; on AWS the SDK finds S3 by region and role. Logs show the Lambda `REPORT` line per invocation (cold ~125 ms, warm ~5 ms).
+- **Unit tests:** `functions/src/s3-event.test.ts` (record extraction, `+`/percent key decoding, jobId). Root `typecheck`, `lint` and `npm test` cover `functions/src`.
+- **Local vs AWS, knowingly:** on AWS the trigger is a bucket notification configuration and async invocations retry twice then go to a DLQ/destination. Here the emulator answers 200 even when a handler throws, so MinIO does not resend a *failed* invocation (only an *undelivered* one); the error is visible in `docker compose logs fn-…`.
+- **Queue vs function:** heavy, rate-limited, failure-counted work (transcodes) stays on RabbitMQ with prefetch and parking; small idempotent reactions to storage events run as functions.
+- **Left out for simplicity:** real AWS / LocalStack / SAM, MinIO Object Lambda (transform-on-GET), a DLQ for failed invocations, and pushing function results into Redis/SSE.
 
 ---
 

@@ -13,7 +13,7 @@ ffmpeg is *not* installed on the host; it lives in the worker image.
 - Change the worker count: `WORKERS=8 npm run up`   # 12-core box: 4 is a good default, ~10 max
 - Rebuild the worker image after a Dockerfile/dependency change: `npm run build:worker`
 - Status / health: `docker compose ps`
-- Logs: `docker compose logs -f <service>` · workers only: `npm run logs:worker`
+- Logs: `docker compose logs -f <service>` · workers only: `npm run logs:worker` · Lambda functions (one `REPORT` line per invocation): `docker compose logs -f fn-metadata fn-placeholder`
 - Down (keep data): `npm run down` — Down + wipe volumes: `docker compose down -v`
 
 ## Initialize buckets + queues

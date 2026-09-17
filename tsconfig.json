@@ -10,5 +10,5 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true
   },
-  "include": ["src/**/*", "scripts/**/*", "tests/**/*", "vitest.config.ts"]
+  "include": ["src/**/*", "scripts/**/*", "tests/**/*", "functions/src/**/*", "vitest.config.ts"]
 }

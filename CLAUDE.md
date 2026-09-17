@@ -2,7 +2,7 @@
 
 A **Fastify API** streams uploads straight into **MinIO** and returns `202 Accepted` → a durable **RabbitMQ** job is published with publisher confirms → N **worker containers** transcode images with `sharp` and video into an **HLS ladder** with `ffmpeg`, writing derivatives back to MinIO. **Redis** holds job state and feeds live progress to the browser over SSE. Prometheus + Grafana + Jaeger for observability.
 
-> Status: complete (all 14 steps). Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
+> Status: complete (all 15 steps). Full build order & design → [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Data flow
 `POST /uploads → (stream) MinIO media-uploads → confirm-publish to media.jobs → q.work (image | video plan → fan-out video renditions, by routing key) → sharp/ffmpeg → MinIO media-outputs → Redis + SSE`
@@ -10,7 +10,7 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 
 ## Where things run
 - **Host:** the API (`tsx`), unit tests, scripts. **ffmpeg is never installed on the host.**
-- **Docker:** RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger, **and the workers** — scaled as compose replicas. ffmpeg/ffprobe live only inside the worker image.
+- **Docker:** RabbitMQ, MinIO, Redis, RedisInsight, Prometheus, Grafana, Jaeger, **the workers** — scaled as compose replicas — and the two Lambda functions. ffmpeg/ffprobe live only inside the worker image.
 
 ## Component map
 - `src/api/` — `app.ts` (`createApp`, no listen), `index.ts` (entrypoint), `upload-service.ts` (the ingest orchestration), `routes/{uploads,jobs,health}.ts`, `sse.ts`.
@@ -19,6 +19,7 @@ Failures → `media.retry` → `q.retry` (TTL) → back to the work queue; after
 - `src/lib/` — `topology.ts` (the AMQP definition), `amqp`, `s3`, `object-repository` (the only S3 caller), `redis`, `jobs-repository` (the only Redis writer), `logger`, `metrics`, `metrics-server`, `tracing`.
 - `src/config/` — env → zod-validated typed config (the only place that reads `process.env`).
 - `src/domain/` — `job.ts` (wire + record schemas), `media.ts` (MIME allowlist, error classes).
+- `functions/` — AWS Lambda handlers (`metadata`, `placeholder`) invoked by MinIO bucket events, run in AWS's Lambda image. Separate deployables: they use the S3 SDK, `process.env` and `console` directly, not `src/lib` — the one exception to the rules below.
 - `tests/integration/` — testcontainers suite; unit tests sit beside their source as `*.test.ts`.
 
 ## Conventions (non-negotiable)

@@ -1,0 +1,15 @@
+{
+  "name": "media-pipeline-functions",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AWS Lambda handlers triggered by MinIO bucket events",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1104.0",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^5.9.3"
+  }
+}

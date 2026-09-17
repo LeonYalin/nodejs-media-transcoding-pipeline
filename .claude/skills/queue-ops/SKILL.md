@@ -47,6 +47,8 @@ alias mcx='docker run --rm --network media_pipeline_net -e MC_HOST_local=http://
 - The raw upload: `mcx stat local/media-uploads/<jobId>/`
 - Read a playlist: `mcx cat local/media-outputs/<jobId>/hls/master.m3u8`
 - Storage used: `mcx du local/media-outputs`
+- Bucket event rules (which Lambda each bucket triggers): `mcx event ls local/media-uploads` · `mcx event ls local/media-outputs`
+- Lambda outputs for a job: `mcx cat local/media-outputs/<jobId>/source.json` · `mcx stat local/media-outputs/<jobId>/image/placeholder.webp`
 
 ## Redis
 Prefix: `docker compose exec redis redis-cli`

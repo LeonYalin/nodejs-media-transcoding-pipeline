@@ -153,6 +153,8 @@
           link.target = "_blank";
           const thumb = document.createElement("img");
           thumb.src = `${OUTPUTS_URL}${job.jobId}/image/thumb.webp`;
+          // Written by the placeholder Lambda; blurred until the thumbnail paints.
+          thumb.style.background = `url(${OUTPUTS_URL}${job.jobId}/image/placeholder.webp) center / cover`;
           link.append(thumb);
           td.append(link);
         } else {
@@ -163,6 +165,12 @@
           button.onclick = () => play(`${OUTPUTS_URL}${job.jobId}/hls/master.m3u8`);
           td.append(poster, button);
         }
+        // Written by the metadata Lambda when the upload landed.
+        const info = document.createElement("a");
+        info.href = `${OUTPUTS_URL}${job.jobId}/source.json`;
+        info.target = "_blank";
+        info.textContent = "info";
+        td.append(" ", info);
         return td;
       }
 
