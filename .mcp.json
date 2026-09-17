@@ -48,6 +48,11 @@
         "REDIS_DB": "0",
         "REDIS_SSL": "False"
       }
+    },
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--isolated"]
     }
   }
 }

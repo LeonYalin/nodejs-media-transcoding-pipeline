@@ -85,6 +85,7 @@ describe("createJobsRepository", () => {
       renditionsExpected: 3,
       renditionsDone: 1,
       progress: 50,
+      durationSeconds: 12.5,
     });
 
     const record = await repository.getJob(baseRecord.jobId);
@@ -92,6 +93,7 @@ describe("createJobsRepository", () => {
     expect(record?.renditionsExpected).toBe(3);
     expect(record?.renditionsDone).toBe(1);
     expect(record?.progress).toBe(50);
+    expect(record?.durationSeconds).toBe(12.5);
   });
 
   it("applies the job TTL to every write", async () => {

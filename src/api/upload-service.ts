@@ -16,7 +16,10 @@ import { ROUTING_KEYS } from "../lib/topology.js";
 export interface UploadPart {
   file: Readable & { truncated: boolean };
   mimetype: string;
+  filename: string;
 }
+
+const MAX_NAME_LENGTH = 255;
 
 /** Doubles as the `reason` label on the `media_uploads_rejected_total` counter. */
 export type UploadRejectionReason =
@@ -136,6 +139,7 @@ export function createUploadService({
         sourceKey,
         mime,
         bytes,
+        name: part.filename.slice(0, MAX_NAME_LENGTH) || undefined,
         createdAt: now,
         updatedAt: now,
         progress: 0,

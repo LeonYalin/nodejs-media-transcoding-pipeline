@@ -14,5 +14,5 @@
       "Bash(curl -su media:media http://localhost:15672/*)"
     ]
   },
-  "enabledMcpjsonServers": ["grafana", "redis"]
+  "enabledMcpjsonServers": ["grafana", "redis", "chrome-devtools"]
 }

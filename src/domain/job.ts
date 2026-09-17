@@ -55,6 +55,10 @@ export const JobRecordSchema = z.object({
   sourceKey: z.string().min(1),
   mime: MimeTypeSchema,
   bytes: z.number().int().nonnegative(),
+  /** The uploaded file's name, for display only -- keys never derive from it. */
+  name: z.string().max(255).optional(),
+  /** Set by the video plan stage from ffprobe. */
+  durationSeconds: z.number().positive().optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   progress: z.number().min(0).max(100),

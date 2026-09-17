@@ -20,7 +20,7 @@ const log = {
 function fakePart(content: string, mimetype: string, truncated = false): UploadPart {
   const stream = Readable.from([Buffer.from(content)]) as UploadPart["file"];
   stream.truncated = truncated;
-  return { file: stream, mimetype };
+  return { file: stream, mimetype, filename: "holiday.jpg" };
 }
 
 function createFakeObjectRepository() {
@@ -111,7 +111,12 @@ describe("createUploadService", () => {
 
     expect(outcome).toEqual({ accepted: true, jobId: expect.any(String) });
     expect(jobs.created).toHaveLength(1);
-    expect(jobs.created[0]).toMatchObject({ status: "queued", type: "image", bytes: 10 });
+    expect(jobs.created[0]).toMatchObject({
+      status: "queued",
+      type: "image",
+      bytes: 10,
+      name: "holiday.jpg",
+    });
     expect(publisher.published[0].routingKey).toBe(ROUTING_KEYS.IMAGE_TRANSFORM);
     // Key is deterministic from the jobId, with the extension from the MIME type.
     expect(objects.stored.has(`${jobs.created[0].jobId}/source.jpg`)).toBe(true);

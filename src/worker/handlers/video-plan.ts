@@ -70,6 +70,7 @@ export function createVideoPlanHandler({
       await jobsRepository.updateJob(jobId, {
         renditions,
         renditionsExpected: renditions.length,
+        durationSeconds: probe.durationInSeconds,
       });
 
       // If this job is redelivered after a partial fan-out, every rung is

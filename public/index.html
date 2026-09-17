@@ -3,36 +3,118 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media pipeline</title>
+    <title>YalinTube</title>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
     <style>
-      body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; color: #222; }
-      table { border-collapse: collapse; width: 100%; margin-top: 16px; }
-      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #ddd; vertical-align: middle; }
-      progress { width: 140px; }
-      img { max-height: 48px; display: block; }
-      video { width: 100%; max-width: 720px; margin-top: 16px; background: #000; }
-      .error { color: #b00020; }
-      .muted { color: #777; font-family: monospace; font-size: 12px; }
+      :root {
+        --bg: #fff;
+        --surface: #f2f2f2;
+        --surface-hover: #e5e5e5;
+        --text: #0f0f0f;
+        --muted: #606060;
+        --accent: #ff0033;
+        --error: #cc0000;
+        --radius: 12px;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.4 Roboto, system-ui, sans-serif; color: var(--text); background: var(--bg); }
+      a { color: inherit; }
+      button { font: inherit; cursor: pointer; }
+
+      .topbar {
+        position: sticky; top: 0; z-index: 10;
+        display: flex; align-items: center; justify-content: space-between;
+        height: 56px; padding: 0 24px; background: var(--bg);
+      }
+      .logo { display: flex; align-items: center; gap: 6px; font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+      .logo-mark { display: grid; place-items: center; width: 30px; height: 21px; border-radius: 6px; background: var(--accent); color: #fff; font-size: 11px; }
+      .upload { display: flex; align-items: center; gap: 12px; }
+      .upload-status { color: var(--muted); font-size: 13px; }
+      .upload-status.error { color: var(--error); }
+      .pill { border: 0; border-radius: 18px; padding: 8px 16px; background: var(--surface); font-weight: 500; }
+      .pill:hover { background: var(--surface-hover); }
+
+      main { padding: 0 24px 48px; }
+
+      .tabs { display: flex; gap: 12px; padding: 12px 0 20px; }
+      .tab.active { background: var(--text); color: var(--bg); }
+
+      .watch { display: grid; grid-template-columns: minmax(0, 1fr); max-width: 1100px; margin: 8px auto 32px; }
+      .watch[hidden] { display: none; }
+      .player-box { position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; background: #000; }
+      .player-box video { width: 100%; height: 100%; display: block; }
+      .watch-title { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin: 12px 0 4px; }
+      .watch-title h2 { margin: 0; font-size: 20px; word-break: break-word; }
+      .watch-meta { padding: 12px; border-radius: var(--radius); background: var(--surface); }
+      .watch-meta p { margin: 0 0 6px; font-weight: 500; }
+      .watch-meta a { margin-right: 16px; font-size: 13px; }
+
+      .quality { position: absolute; right: 12px; top: 12px; }
+      .quality[hidden] { display: none; }
+      .quality-button { border: 0; border-radius: 16px; padding: 6px 12px; background: rgb(0 0 0 / 0.6); color: #fff; font-size: 13px; }
+      .quality-button:hover { background: rgb(0 0 0 / 0.8); }
+      .quality-menu { position: absolute; right: 0; top: 36px; min-width: 150px; padding: 8px 0; margin: 0; list-style: none; border-radius: var(--radius); background: rgb(28 28 28 / 0.92); color: #fff; }
+      .quality-menu[hidden] { display: none; }
+      .quality-menu li { padding: 8px 16px 8px 36px; position: relative; cursor: pointer; }
+      .quality-menu li:hover { background: rgb(255 255 255 / 0.1); }
+      .quality-menu li.selected::before { content: "✓"; position: absolute; left: 14px; }
+
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 40px 16px; }
+      .empty { color: var(--muted); padding: 48px 0; text-align: center; }
+      .card { cursor: default; }
+      .card.playable { cursor: pointer; }
+      .thumb {
+        position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden;
+        background: var(--surface) center / cover;
+      }
+      .card.playable:hover .thumb { outline: 3px solid var(--surface-hover); }
+      .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .badge { position: absolute; right: 8px; bottom: 8px; padding: 1px 5px; border-radius: 4px; background: rgb(0 0 0 / 0.8); color: #fff; font-size: 12px; font-weight: 500; }
+      .badge.failed { background: var(--error); }
+      .pending { display: grid; place-items: center; height: 100%; background: #272727; color: #fff; font-size: 13px; text-transform: capitalize; }
+      .bar { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--accent); transition: width 0.3s; }
+      .card h3 { margin: 12px 0 4px; font-size: 16px; font-weight: 500; line-height: 22px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+      .meta { color: var(--muted); font-size: 13px; }
+      .card .error { color: var(--error); font-size: 13px; }
     </style>
   </head>
   <body>
-    <h1>Media pipeline</h1>
+    <header class="topbar">
+      <div class="logo"><span class="logo-mark">▶</span>YalinTube</div>
+      <div class="upload">
+        <span id="upload-status" class="upload-status"></span>
+        <input id="file-input" type="file" accept="image/*,video/*" hidden />
+        <button id="upload-button" class="pill">⬆ Upload</button>
+      </div>
+    </header>
 
-    <form id="upload-form">
-      <input type="file" name="file" accept="image/*,video/*" required />
-      <button type="submit">Upload</button>
-      <span id="upload-result"></span>
-    </form>
+    <main>
+      <section id="watch" class="watch" hidden>
+        <div class="player-box">
+          <video id="player" controls playsinline></video>
+          <div id="quality" class="quality" hidden>
+            <button id="quality-button" class="quality-button">⚙ Auto</button>
+            <ul id="quality-menu" class="quality-menu" hidden></ul>
+          </div>
+        </div>
+        <div class="watch-title">
+          <h2 id="watch-name"></h2>
+          <button id="watch-close" class="pill" aria-label="Close player">✕</button>
+        </div>
+        <div class="watch-meta">
+          <p id="watch-details"></p>
+          <a id="watch-source" target="_blank">source.json</a>
+          <a id="watch-master" target="_blank">master.m3u8</a>
+        </div>
+      </section>
 
-    <video id="player" controls hidden></video>
+      <nav class="tabs">
+        <button class="pill tab active" data-tab="video">Videos</button>
+        <button class="pill tab" data-tab="image">Images</button>
+      </nav>
 
-    <table>
-      <thead>
-        <tr><th>Job</th><th>Type</th><th>Status</th><th>Progress</th><th>Created</th><th>Output</th></tr>
-      </thead>
-      <tbody id="jobs"></tbody>
-    </table>
+      <div id="grid" class="grid"></div>
+    </main>
 
     <script>
       // media-outputs is public-read (see minio-init in docker-compose.yml).
@@ -40,43 +122,55 @@
       const POLL_MS = 3000;
       const MAX_STREAMS = 4;
 
-      const jobsBody = document.getElementById("jobs");
-      const player = document.getElementById("player");
-      /** jobId -> the open EventSource for a job that is still running. */
-      const streams = new Map();
       /** jobId -> the latest record, from polling or SSE. */
       const records = new Map();
+      /** jobId -> the open EventSource for a job that is still running. */
+      const streams = new Map();
+      /** jobId -> { version, element }, so an unchanged card is not rebuilt and its images do not flicker. */
+      const cards = new Map();
 
-      document.getElementById("upload-form").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const result = document.getElementById("upload-result");
-        result.textContent = "Uploading...";
-        result.className = "";
+      let activeTab = "video";
+      let hls = null;
 
-        const response = await fetch("/uploads", { method: "POST", body: new FormData(event.target) });
+      const grid = document.getElementById("grid");
+      const player = document.getElementById("player");
+
+      // ---- Upload -----------------------------------------------------------
+
+      const fileInput = document.getElementById("file-input");
+      document.getElementById("upload-button").onclick = () => fileInput.click();
+      fileInput.onchange = async () => {
+        const status = document.getElementById("upload-status");
+        const file = fileInput.files[0];
+        if (!file) return;
+        status.textContent = `Uploading ${file.name}…`;
+        status.className = "upload-status";
+
+        const form = new FormData();
+        form.append("file", file);
+        const response = await fetch("/uploads", { method: "POST", body: form });
         const body = await response.json();
+        fileInput.value = "";
         if (response.status === 202) {
-          result.textContent = `Accepted ${body.jobId}`;
-          event.target.reset();
+          status.textContent = "Accepted — processing";
+          showTab(file.type.startsWith("image/") ? "image" : "video");
           await refreshJobs();
         } else {
-          result.textContent = `${response.status}: ${body.error}`;
-          result.className = "error";
+          status.textContent = `${response.status}: ${body.error}`;
+          status.className = "upload-status error";
         }
-      });
+      };
+
+      // ---- Jobs: poll + SSE -------------------------------------------------
 
       async function refreshJobs() {
-        const response = await fetch("/jobs");
+        const response = await fetch("/jobs?limit=100");
         const { jobs } = await response.json();
         for (const job of jobs) {
           records.set(job.jobId, job);
           if (job.status === "processing") followJob(job.jobId);
         }
-        render(jobs.map((job) => job.jobId));
-      }
-
-      function isRunning(job) {
-        return job.status === "queued" || job.status === "processing";
+        renderGrid();
       }
 
       /**
@@ -96,98 +190,227 @@
         stream.onmessage = (event) => {
           const job = JSON.parse(event.data);
           records.set(jobId, job);
-          renderRow(job);
-          if (!isRunning(job)) stop();
+          renderGrid();
+          if (job.status !== "queued" && job.status !== "processing") stop();
         };
       }
 
-      function render(jobIds) {
-        jobsBody.replaceChildren();
-        for (const jobId of jobIds) renderRow(records.get(jobId));
+      // ---- Grid -------------------------------------------------------------
+
+      document.querySelectorAll(".tab").forEach((tab) => {
+        tab.onclick = () => showTab(tab.dataset.tab);
+      });
+
+      function showTab(tab) {
+        activeTab = tab;
+        document.querySelectorAll(".tab").forEach((button) => {
+          button.classList.toggle("active", button.dataset.tab === tab);
+        });
+        renderGrid();
       }
 
-      function renderRow(job) {
-        const row = document.createElement("tr");
-        row.id = `job-${job.jobId}`;
-        row.append(
-          cell(job.jobId.slice(0, 8), "muted"),
-          cell(job.type),
-          cell(job.status, job.status === "failed" ? "error" : ""),
-          progressCell(job),
-          cell(new Date(job.createdAt).toLocaleTimeString()),
-          outputCell(job),
-        );
-        const existing = document.getElementById(row.id);
-        if (existing) existing.replaceWith(row);
-        else jobsBody.append(row);
-      }
+      function renderGrid() {
+        const jobs = [...records.values()]
+          .filter((job) => job.type === activeTab)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-      function cell(text, className = "") {
-        const td = document.createElement("td");
-        td.textContent = text;
-        td.className = className;
-        return td;
-      }
-
-      function progressCell(job) {
-        const td = document.createElement("td");
-        const bar = document.createElement("progress");
-        bar.max = 100;
-        bar.value = job.progress;
-        td.append(bar, ` ${Math.round(job.progress)}%`);
-        return td;
-      }
-
-      function outputCell(job) {
-        const td = document.createElement("td");
-        if (job.status === "failed") {
-          td.textContent = job.error ?? "";
-          td.className = "error";
-          return td;
+        if (jobs.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = `No ${activeTab}s yet — upload one.`;
+          grid.replaceChildren(empty);
+          return;
         }
-        if (job.status !== "completed") return td;
+        grid.replaceChildren(...jobs.map(cardFor));
+      }
 
-        if (job.type === "image") {
-          const link = document.createElement("a");
-          link.href = `${OUTPUTS_URL}${job.jobId}/image/full.webp`;
-          link.target = "_blank";
-          const thumb = document.createElement("img");
-          thumb.src = `${OUTPUTS_URL}${job.jobId}/image/thumb.webp`;
-          // Written by the placeholder Lambda; blurred until the thumbnail paints.
-          thumb.style.background = `url(${OUTPUTS_URL}${job.jobId}/image/placeholder.webp) center / cover`;
-          link.append(thumb);
-          td.append(link);
-        } else {
-          const poster = document.createElement("img");
+      function cardFor(job) {
+        // The relative time is part of the version, so "just now" does not stick.
+        const version = `${job.updatedAt} ${timeAgo(job.createdAt)}`;
+        const cached = cards.get(job.jobId);
+        if (cached?.version === version) return cached.element;
+        const element = job.type === "video" ? videoCard(job) : imageCard(job);
+        cards.set(job.jobId, { version, element });
+        return element;
+      }
+
+      function videoCard(job) {
+        const card = el("article", "card");
+        const thumb = el("div", "thumb");
+
+        if (job.status === "completed") {
+          card.classList.add("playable");
+          card.onclick = () => watch(job.jobId);
+          const poster = el("img");
           poster.src = `${OUTPUTS_URL}${job.jobId}/poster.jpg`;
-          const button = document.createElement("button");
-          button.textContent = "Play";
-          button.onclick = () => play(`${OUTPUTS_URL}${job.jobId}/hls/master.m3u8`);
-          td.append(poster, button);
+          poster.alt = "";
+          thumb.append(poster);
+          if (job.durationSeconds) thumb.append(el("span", "badge", formatDuration(job.durationSeconds)));
+        } else {
+          thumb.append(pendingThumb(job));
         }
-        // Written by the metadata Lambda when the upload landed.
-        const info = document.createElement("a");
-        info.href = `${OUTPUTS_URL}${job.jobId}/source.json`;
-        info.target = "_blank";
-        info.textContent = "info";
-        td.append(" ", info);
-        return td;
+
+        card.append(thumb, el("h3", "", job.name ?? "Untitled video"), metaLine(job));
+        if (job.status === "failed") card.append(el("div", "error", job.error ?? "Failed"));
+        return card;
       }
 
-      let hls = null;
-      function play(masterUrl) {
-        player.hidden = false;
+      function imageCard(job) {
+        const card = el("article", "card");
+        const thumb = el("div", "thumb");
+
+        if (job.status === "completed") {
+          card.classList.add("playable");
+          card.onclick = () => window.open(`${OUTPUTS_URL}${job.jobId}/image/full.webp`, "_blank");
+          // Written by the placeholder Lambda; blurred until the thumbnail paints.
+          thumb.style.backgroundImage = `url(${OUTPUTS_URL}${job.jobId}/image/placeholder.webp)`;
+          const image = el("img");
+          image.src = `${OUTPUTS_URL}${job.jobId}/image/thumb.webp`;
+          image.alt = "";
+          thumb.append(image);
+        } else {
+          thumb.append(pendingThumb(job));
+        }
+
+        card.append(thumb, el("h3", "", job.name ?? "Untitled image"), metaLine(job));
+        if (job.status === "failed") card.append(el("div", "error", job.error ?? "Failed"));
+        return card;
+      }
+
+      function pendingThumb(job) {
+        if (job.status === "failed") return el("div", "pending", "✕ Failed");
+        const label = job.status === "processing" ? `Processing ${Math.round(job.progress)}%` : job.status;
+        const pending = el("div", "pending", label);
+        const bar = el("div", "bar");
+        bar.style.width = `${job.progress}%`;
+        pending.append(bar);
+        return pending;
+      }
+
+      function metaLine(job) {
+        return el("div", "meta", [formatMb(job.bytes), timeAgo(job.createdAt)].join(" · "));
+      }
+
+      // ---- Watch view + Quality menu -----------------------------------------
+
+      document.getElementById("watch-close").onclick = closeWatch;
+
+      function watch(jobId) {
+        const job = records.get(jobId);
+        const masterUrl = `${OUTPUTS_URL}${jobId}/hls/master.m3u8`;
+
+        document.getElementById("watch-name").textContent = job.name ?? "Untitled video";
+        const ladder = (job.renditions ?? []).map((rendition) => rendition.name).join(" / ");
+        document.getElementById("watch-details").textContent = [
+          formatMb(job.bytes),
+          job.durationSeconds ? formatDuration(job.durationSeconds) : null,
+          ladder,
+          new Date(job.createdAt).toLocaleString(),
+        ].filter(Boolean).join(" · ");
+        document.getElementById("watch-source").href = `${OUTPUTS_URL}${jobId}/source.json`;
+        document.getElementById("watch-master").href = masterUrl;
+        document.getElementById("watch").hidden = false;
+        window.scrollTo({ top: 0, behavior: "smooth" });
+
         hls?.destroy();
         hls = null;
+        document.getElementById("quality").hidden = true;
+
         if (window.Hls?.isSupported()) {
           hls = new Hls();
+          hls.on(Hls.Events.MANIFEST_PARSED, buildQualityMenu);
+          hls.on(Hls.Events.LEVEL_SWITCHED, updateQualityLabel);
           hls.loadSource(masterUrl);
           hls.attachMedia(player);
         } else {
-          // Safari plays HLS natively.
+          // Native HLS (Safari without MSE): no level API, so no Quality menu.
           player.src = masterUrl;
         }
-        player.play();
+        player.play().catch(() => {});
+      }
+
+      function closeWatch() {
+        hls?.destroy();
+        hls = null;
+        player.removeAttribute("src");
+        player.load();
+        document.getElementById("watch").hidden = true;
+      }
+
+      const qualityButton = document.getElementById("quality-button");
+      const qualityMenu = document.getElementById("quality-menu");
+      qualityButton.onclick = (event) => {
+        event.stopPropagation();
+        qualityMenu.hidden = !qualityMenu.hidden;
+      };
+      document.addEventListener("click", () => (qualityMenu.hidden = true));
+
+      /** One entry per rung the manifest advertises, highest first, plus Auto (ABR). */
+      function buildQualityMenu() {
+        const options = [{ label: "Auto", level: -1 }];
+        hls.levels
+          .map((level, index) => ({ label: `${level.height}p`, level: index, height: level.height }))
+          .sort((a, b) => b.height - a.height)
+          .forEach((option) => options.push(option));
+
+        qualityMenu.replaceChildren(
+          ...options.map(({ label, level }) => {
+            const item = el("li", "", label);
+            item.dataset.level = level;
+            item.onclick = () => {
+              // A manual pick switches immediately (flushing the buffer), as
+              // YouTube does; -1 hands control back to adaptive bitrate.
+              hls.currentLevel = level;
+              qualityMenu.hidden = true;
+              updateQualityLabel();
+            };
+            return item;
+          }),
+        );
+        document.getElementById("quality").hidden = false;
+        updateQualityLabel();
+      }
+
+      function updateQualityLabel() {
+        if (!hls) return;
+        const auto = hls.autoLevelEnabled;
+        const playing = hls.levels[hls.currentLevel];
+        const height = playing ? `${playing.height}p` : "";
+        qualityButton.textContent = auto ? `⚙ Auto${height ? ` (${height})` : ""}` : `⚙ ${height}`;
+        const selected = auto ? -1 : hls.currentLevel;
+        for (const item of qualityMenu.children) {
+          item.classList.toggle("selected", Number(item.dataset.level) === selected);
+        }
+      }
+
+      // ---- Formatting -------------------------------------------------------
+
+      /** textContent only: file names are user input and must never become HTML. */
+      function el(tag, className = "", text = "") {
+        const element = document.createElement(tag);
+        element.className = className;
+        element.textContent = text;
+        return element;
+      }
+
+      function formatMb(bytes) {
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+      }
+
+      function formatDuration(seconds) {
+        const total = Math.round(seconds);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = String(total % 60).padStart(2, "0");
+        return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+      }
+
+      function timeAgo(iso) {
+        const seconds = Math.round((Date.now() - Date.parse(iso)) / 1000);
+        if (seconds < 60) return "just now";
+        if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+        return `${Math.floor(seconds / 86400)} d ago`;
       }
 
       refreshJobs();

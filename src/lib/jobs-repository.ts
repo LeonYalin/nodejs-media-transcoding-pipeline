@@ -32,6 +32,7 @@ export interface JobPatch {
   progress?: number;
   error?: string;
   outputs?: string[];
+  durationSeconds?: number;
   renditions?: Rendition[];
   renditionsExpected?: number;
   renditionsDone?: number;
@@ -60,12 +61,21 @@ function encode(record: Partial<JobRecord>): Record<string, string> {
 }
 
 function decode(fields: Record<string, string>): JobRecord {
-  const { bytes, progress, outputs, renditions, renditionsExpected, renditionsDone, ...rest } =
-    fields;
+  const {
+    bytes,
+    progress,
+    durationSeconds,
+    outputs,
+    renditions,
+    renditionsExpected,
+    renditionsDone,
+    ...rest
+  } = fields;
   return JobRecordSchema.parse({
     ...rest,
     bytes: Number(bytes),
     progress: Number(progress),
+    ...(durationSeconds !== undefined ? { durationSeconds: Number(durationSeconds) } : {}),
     ...(outputs !== undefined ? { outputs: JSON.parse(outputs) as unknown } : {}),
     ...(renditions !== undefined ? { renditions: JSON.parse(renditions) as unknown } : {}),
     ...(renditionsExpected !== undefined ? { renditionsExpected: Number(renditionsExpected) } : {}),
